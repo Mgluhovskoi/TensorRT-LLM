@@ -867,6 +867,16 @@ class ThopAttention(OpWrapper):
                 _BEAM_FULL, cached=(64,), new=(17,), num_contexts=1, predicted_tokens_per_seq=1
             ),
         ),
+        *(
+            Cell(
+                why=f"beam tp4 {'sliding' if spec['window'] else 'full'}, paged context: "
+                "17 rows over a 576-token reused prefix",
+                spec=dict(
+                    spec, cached=(576,), new=(17,), num_contexts=1, predicted_tokens_per_seq=1
+                ),
+            )
+            for spec in (_BEAM_TP4_SLIDING, _BEAM_TP4_FULL)
+        ),
         Cell(
             why="beam tp4 sliding verify P=8: blocks after histories 503, 504 and 505 end "
             "at 511, 512 and 513, crossing the 512-token window",
