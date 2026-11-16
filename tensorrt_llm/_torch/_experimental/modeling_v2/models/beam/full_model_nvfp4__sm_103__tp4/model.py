@@ -24,7 +24,7 @@ verification step ``P`` (its pending token and ``P - 1`` proposals). Each reques
 rows that reach the final norm and the head before either runs: ``None`` (default) is the
 last row of each request, in request order -- the next-token logits a sampler needs --
 ``"all"`` every row, ``"verification"`` the last row of each context request and every row
-of each generation request (what a speculative verifier reads), or explicit row indices.
+of each generation request (what a speculative verifier reads).
 ``block_output(layer, x)``, when given, receives each logical layer's completed block output
 ``x`` ``[T, hidden]`` (the residual stream after the block, before the next block or the
 final norm) as soon as the block returns.
@@ -32,8 +32,8 @@ final norm) as soon as the block returns.
 The cache must be a ``KVCacheManagerV2`` of the model's KV-cache dtype (BF16, or FP8 with the
 per-layer scales of ``set_kv_cache_fp8``) holding all 52 logical layers in logical order
 with 2 kv heads of 128 per rank, a 512-token window on every sliding layer and the whole
-sequence (``max_seq_len``) on the full-attention layers 5, 11, 17, 23, 29, 35, 41, 47 and 51
-(``attention_windows``). Inputs, positions, metadata and cache are validated before any kernel
+sequence (``max_seq_len``) on the full-attention layers 5, 11, 17, 23, 29, 35, 41, 47 and 51.
+Inputs, positions, metadata and cache are validated before any kernel
 runs; a call with T above ``max_tokens`` is rejected (the default ``MAX_NUM_TOKENS`` matches
 the supported deployment's native ``max_num_tokens``).
 
@@ -46,7 +46,7 @@ per-layer metadata re-checks and the per-sparse-layer router agreement across ra
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Literal, Mapping, Optional, Sequence, Union
 
 import torch
 
@@ -63,7 +63,7 @@ NUM_LAYERS = SUPPORTED_CONFIG["num_hidden_layers"]
 #: KV cache page size of the supported deployment.
 TOKENS_PER_BLOCK = 32
 
-LogitRows = Union[None, str, Sequence[int]]
+LogitRows = Literal["all", "verification"] | None
 
 
 class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
@@ -90,13 +90,6 @@ class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
         # The last manager check_cache_manager accepted: its layers, heads, windows and dtype
         # are fixed at its construction, so a call on the same manager need not re-read them.
         self._checked_manager = None
-
-    def attention_windows(self, max_seq_len: int) -> list:
-        """Per logical layer: the attention window its cache must keep (512 or ``max_seq_len``)."""
-        return [
-            self.window if self.schedule.is_sliding(layer) else max_seq_len
-            for layer in range(NUM_LAYERS)
-        ]
 
     def check_cache_manager(self, manager) -> None:
         """Raise ValueError unless ``manager`` holds every logical layer as this model needs.
@@ -165,26 +158,13 @@ class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
         if isinstance(logit_rows, str):
             if logit_rows == "all":
                 return list(range(num_tokens))
-            if logit_rows != "verification":
-                raise ValueError(
-                    "logit_rows must be None, 'all', 'verification' or row indices, got "
-                    f"{logit_rows!r}"
-                )
-            rows, start = [], 0
-            for i, (_, n) in enumerate(spans):
-                rows.extend([start + n - 1] if i < num_contexts else range(start, start + n))
-                start += n
-            return rows
-        rows = list(logit_rows)
-        if (
-            not rows
-            or any(type(r) is not int or not 0 <= r < num_tokens for r in rows)
-            or len(set(rows)) != len(rows)
-        ):
-            raise ValueError(
-                f"logit_rows must be distinct row indices in [0, {num_tokens}), got {logit_rows!r}"
-            )
-        return rows
+            if logit_rows == "verification":
+                rows, start = [], 0
+                for i, (_, n) in enumerate(spans):
+                    rows.extend([start + n - 1] if i < num_contexts else range(start, start + n))
+                    start += n
+                return rows
+        raise ValueError(f"logit_rows must be None, 'all' or 'verification', got {logit_rows!r}")
 
     def check_call(
         self,
