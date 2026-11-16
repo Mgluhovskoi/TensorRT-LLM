@@ -1,3 +1,7 @@
+### :title Evaluate GSM8K through a chat endpoint
+### :order 8
+### :section Customization
+
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
