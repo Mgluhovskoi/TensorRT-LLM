@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
-from ..._router_index import NoTarget
+from ..._router_index import NoTarget, routes
 from ._constants import SM, SUPPORTED_CONFIG, WORLD_SIZE
 from .full_model_nvfp4__sm_103__tp4.limits import MAX_NUM_TOKENS
 
@@ -130,6 +130,7 @@ def checkpoint_refusal(pretrained_config: Any, spec_config: Optional[Any]) -> Op
     return None
 
 
+@routes("BeamForCausalLM")
 def route(
     pretrained_config: Any,
     mapping: Any,

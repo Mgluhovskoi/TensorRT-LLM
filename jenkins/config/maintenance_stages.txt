@@ -28,5 +28,5 @@
 # H100_PCIe-*
 # DGX_H100-*
 
-Reason: B200 multi-GPU stages are paused to relieve the CI queue backlog (109 running / 459 pending on 2026-10-22). Owner: @sharabeshj-nvda. The CI team decides when to lift it.
-DGX_B200-*_GPUs-*
+Reason: H100_PCIe-PyTorch-Perf-1 was retired from main; skip the legacy stage in older PR revisions.
+H100_PCIe-PyTorch-Perf-1
