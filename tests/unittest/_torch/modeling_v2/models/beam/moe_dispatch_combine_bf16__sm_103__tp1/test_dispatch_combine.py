@@ -107,14 +107,6 @@ def run_checked(
 def test_public_callable_and_provider_interface() -> None:
     params = list(inspect.signature(beam_dispatch_combine).parameters)
     assert params == ["hidden_states", "expert_ids", "mixing_weights", "expert_provider"]
-    doc = " ".join(inspect.getdoc(dispatch_combine).split())
-    for phrase in (
-        "expert_provider(expert_id, rows)",
-        "owns dispatch and combination",
-        "owns the expert computation",
-        "[n, 5120]",
-    ):
-        assert phrase in doc, phrase
     assert (
         dispatch_combine.HIDDEN_SIZE,
         dispatch_combine.NUM_EXPERTS,

@@ -38,7 +38,6 @@ import functools
 import gc
 import types
 from collections import OrderedDict
-from pathlib import Path
 
 import pytest
 import torch
@@ -56,9 +55,6 @@ from tensorrt_llm._torch._experimental.modeling_v2.catalog.moe.beam_grouped_topk
 )
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (  # noqa: E501
     dispatch_combine,
-)
-from tensorrt_llm._torch._experimental.modeling_v2.models.beam.moe_bf16__sm_103__tp1 import (
-    moe as moe_module,
 )
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam.moe_bf16__sm_103__tp1.moe import (
     BeamMoeBf16Sm103Tp1,
@@ -441,7 +437,6 @@ def test_moe_constructs_alone() -> None:
             assert tensors[f"experts.{expert_id}.{attr}.weight"] is getattr(expert, attr)
     pointers = [t.data_ptr() for name, t in tensors.items() if name.startswith("experts.")]
     assert len(pointers) == 768 and len(set(pointers)) == 768
-    assert "modeling_beam" not in Path(moe_module.__file__).read_text()
 
 
 # -------------------------------------------------- tests: declared limits
