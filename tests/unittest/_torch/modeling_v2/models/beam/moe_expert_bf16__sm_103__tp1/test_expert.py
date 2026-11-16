@@ -41,7 +41,7 @@ from tensorrt_llm._torch._experimental.modeling_v2.models.beam.moe_expert_bf16__
 
 __extra_import_path__ = [".", "..", "../../.."]
 import _expert_cases as cases  # noqa: E402
-from _beam_component_support import TorchCallTrace  # noqa: E402
+from _beam_component_support import TorchCallTrace, bitwise_equal  # noqa: E402
 from _validating import validating  # noqa: E402
 
 assert torch.cuda.is_available(), "the Beam MoE expert tests require a CUDA device"
@@ -109,14 +109,6 @@ def loaded(weights: dict) -> BeamMoeExpertBf16Sm103Tp1:
     expert = BeamMoeExpertBf16Sm103Tp1(device="cuda")
     expert.load_weights(weights)
     return expert
-
-
-def bitwise_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
-    return (
-        a.dtype == b.dtype
-        and a.shape == b.shape
-        and torch.equal(a.view(torch.int16), b.view(torch.int16))
-    )
 
 
 # ----------------------------------------------------------------------------- state
