@@ -58,6 +58,16 @@ The following is a table of supported models for the PyTorch backend:
 | `WhisperForConditionalGeneration`    | Whisper                            | `openai/whisper-large-v3`                    |
 
 
+## Models Supported outside main branch
+
+Beam serving support is available on the feature branch below. The public
+architecture identifier does not imply support in a regular main-branch release;
+follow the branch's deployment guide for its supported configuration and limits.
+
+| Model | Side branch | Deployment guide | Release container |
+| ----- | ----------- | ---------------- | ----------------- |
+| Beam (Reflection AI), `BeamForCausalLM` ([public NVFP4 checkpoint](https://huggingface.co/reflection/Beam-1.0-501B-A23B-NVFP4)) | [`feat/reflection-beam`](https://github.com/NVIDIA/TensorRT-LLM/tree/feat/reflection-beam) | [Beam deployment guide](https://github.com/NVIDIA/TensorRT-LLM/blob/feat/reflection-beam/docs/source/deployment-guide/deployment-guide-for-beam-on-trtllm.md) | Build from the branch sources per the guide |
+
 ## Model-Feature Support Matrix (Key Models)
 
 Note: Support for other models may vary. Features marked "N/A" are not applicable to the model architecture.
