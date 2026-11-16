@@ -689,3 +689,12 @@ def test_target_kv_cache_mode_and_scale_table_requirements():
         target(None, None)._check_kv_cache_scales(table)
     with pytest.raises(ValueError, match="draft"):
         target(QuantAlgo.FP8, object())._check_kv_cache_scales({"target": (1.0,) * 52})
+
+
+def test_default_weight_loader_is_refused_explicitly():
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4.modeling import (
+        ModelingV2BeamFullModelNvfp4Sm103Tp4,
+    )
+
+    with pytest.raises(ValueError, match="BeamNvfp4CheckpointLoader"):
+        ModelingV2BeamFullModelNvfp4Sm103Tp4.load_weights(SimpleNamespace(), {})

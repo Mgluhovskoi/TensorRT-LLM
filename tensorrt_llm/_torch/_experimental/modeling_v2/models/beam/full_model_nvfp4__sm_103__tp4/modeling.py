@@ -432,6 +432,13 @@ class ModelingV2BeamFullModelNvfp4Sm103Tp4(nn.Module):
         if getattr(request, "lora_task_id", None) is not None:
             raise ValueError("LoRA requests are not supported by this Beam target")
 
+    def load_weights(self, weights: dict) -> None:
+        """Reject the default HF loader before it can silently leave weights unloaded."""
+        raise ValueError(
+            "Beam requires BeamNvfp4CheckpointLoader supplied through checkpoint_loader; "
+            "the default HF load_weights path is not supported"
+        )
+
     def _check_kv_cache_scales(self, table: Optional[dict]) -> None:
         if self.kv_cache_quant_algo != QuantAlgo.FP8:
             if table is not None:
