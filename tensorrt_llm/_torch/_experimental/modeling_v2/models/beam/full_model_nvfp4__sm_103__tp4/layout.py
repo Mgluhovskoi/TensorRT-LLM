@@ -311,6 +311,8 @@ def check_recipe(quant_config: Any, specs: Mapping[str, Any]) -> dict:
     q = quant_config.get("quantization")
     if not isinstance(q, Mapping):
         raise ValueError("hf_quant_config.json has no 'quantization' object")
+    if quant_config.get("kv_cache_scheme") is not None or q.get("kv_cache_scheme") is not None:
+        raise ValueError("kv_cache_scheme is not supported in the checkpoint recipe")
     if q.get("quant_algo") != QUANT_ALGO:
         raise ValueError(f"unsupported quant_algo {q.get('quant_algo')!r}; expected {QUANT_ALGO}")
     if q.get("group_size") != GROUP or type(q.get("group_size")) is not int:
