@@ -1531,6 +1531,8 @@ class BeamHarmonyTextParser(BaseReasoningParser):
             self._emit(held, out)
         return ReasoningParserResult(content="".join(out[0]),
                                      reasoning_content="".join(out[1]))
+
+
 # Model-specific parsers live in tensorrt_llm.llmapi.reasoning; importing a
 # module runs its register_reasoning_parser decorators. It is imported by
 # module rather than by name: a model module imported first imports this one,

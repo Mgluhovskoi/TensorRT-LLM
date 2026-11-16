@@ -13,7 +13,7 @@ This is the BF16 layout component (``component_bf16``) with NVFP4 expert
 storage and execution. Everything outside the routed experts -- ownership, the embedding,
 attention on TRTLLM attention and KVCacheManagerV2 metadata, the dense feed-forward, the
 replicated FP32 router with its diagnostic-mode all-rank agreement check, dispatch/combine, the
-norms, depth residuals, head and every collective -- is that component's code, unchanged, on
+norms, depth residuals and head -- uses that component's code on
 the checkpoint's BF16/FP32 tensors copied byte for byte. The experts stay packed:
 
     storage   per sparse layer and projection kind, banks indexed by global expert id: packed
@@ -30,47 +30,29 @@ the checkpoint's BF16/FP32 tensors copied byte for byte. The experts stay packed
 Loading streams bounded tiles straight into that storage and is a transaction: metadata
 (config.json, hf_quant_config.json, every index/header entry) is validated against the whole
 model before any storage changes, and the component is usable only after every rank loaded
-every selected tensor. Every parameter, bank and derived scalar is a registered parameter, so
-``weight_state`` covers packed codes, block scales and scalars.
+every selected tensor. Packed codes, block scales and derived scalars are all registered
+parameters.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import struct
-from collections import OrderedDict
-from typing import Any, Mapping, Optional, Sequence
+from typing import Optional
 
 import torch
 from torch import nn
 
-from tensorrt_llm.mapping import Mapping as ParallelMapping
-
-from .._constants import SM as _SM
-from .._load import load_failure_details
-from . import dispatch_combine
+from .. import dispatch_combine
+from .._tp4.component_bf16 import BeamCheckpointLayoutBf16Sm103Tp4, LoadError, _attr
 from . import expert as nvfp4_expert
-from .component_bf16 import (
-    MAX_TOKENS,
-    BeamCheckpointLayoutBf16Sm103Tp4,
-    LoadError,
-    _attr,
-    _check_mapping,
-    _rec,
-    check_max_tokens,
-)
 from .layout import (
-    EMBED,
     PROJECTIONS,
-    QUANT_CONFIG_FILE,
-    WORLD_SIZE,
     QuantSpec,
-    check_config,
+    TensorSpec,
     check_partition,
     check_recipe,
-    ownership_ledger,
+    read_quant_config,
     stored_entries,
     swizzled_numel,
     tensor_specs,
@@ -82,7 +64,6 @@ from .loader import (
     check_block_scales,
     read_packed_into,
     read_scalars,
-    read_slice_into,
     validate,
 )
 
@@ -106,48 +87,13 @@ class BeamCheckpointLayoutNvfp4Sm103Tp4(BeamCheckpointLayoutBf16Sm103Tp4):
     validates the configuration and layout; it reads no checkpoint data.
     """
 
-    def __init__(
-        self,
-        config: Mapping[str, Any],
-        mapping: ParallelMapping,
-        layers: Optional[Sequence[int]] = None,
-        device: Optional[torch.device] = None,
-        *,
-        max_tokens: int = MAX_TOKENS,
-    ):
-        nn.Module.__init__(self)
-        self.max_tokens = check_max_tokens(max_tokens)
-        self.schedule = check_config(config)
-        _check_mapping(mapping)
-        device = (
-            torch.device("cuda", torch.cuda.current_device())
-            if device is None
-            else torch.device(device)
-        )
-        if device.type != "cuda" or torch.cuda.get_device_capability(device) != _SM:
-            raise ValueError(
-                f"this component is built for sm_{_SM[0]}{_SM[1]} CUDA devices, got {device}"
-            )
-        self.config = dict(config)
-        self.mapping = mapping
-        self.rank = mapping.rank
-        self.device = device
-        self.layers = tuple(sorted(range(self.schedule.num_layers) if layers is None else layers))
-        self.specs = tensor_specs(config, self.layers)
-        check_partition(self.specs)
-        self.hidden = config["hidden_size"]
-        self.head_dim = config["head_dim"]
-        self.local_heads = config["num_attention_heads"] // WORLD_SIZE
-        self.local_kv_heads = config["num_key_value_heads"] // WORLD_SIZE
-        self.eps = config["rms_norm_eps"]
-        self.window = config["sliding_window"]
-        self.rope_theta = config["rope_parameters"]["sliding_attention"]["rope_theta"]
-        self.softcap = config["final_logit_softcapping"]
-        self.vocab_interval = self.specs[EMBED].interval(self.rank)[1:]
-        self.tensor_names: list = []
+    _tensor_specs = staticmethod(tensor_specs)
+    _check_partition = staticmethod(check_partition)
+
+    def _allocate_storage(self) -> None:
         self.bank_names: list = []
         self.expert_names: list = []
-        experts = config["num_experts"]
+        experts = self.config["num_experts"]
         for spec in self.specs.values():
             if isinstance(spec, QuantSpec):
                 self.expert_names.append(spec.name)
@@ -167,23 +113,17 @@ class BeamCheckpointLayoutNvfp4Sm103Tp4(BeamCheckpointLayoutBf16Sm103Tp4):
                     self.register_parameter(
                         _attr(f"{spec.bank}.{field}"),
                         nn.Parameter(
-                            torch.empty(shape, dtype=dtype, device=device), requires_grad=False
+                            torch.empty(shape, dtype=dtype, device=self.device), requires_grad=False
                         ),
                     )
                 self.bank_names.append(spec.bank)
                 continue
             dtype = torch.bfloat16 if spec.effective_dtype == "BF16" else torch.float32
             param = nn.Parameter(
-                torch.empty(spec.local_shape(self.rank), dtype=dtype, device=device),
+                torch.empty(spec.local_shape(self.rank), dtype=dtype, device=self.device),
                 requires_grad=False,
             )
             self.register_parameter(_attr(spec.name), param)
-            self.tensor_names.append(spec.name)
-        self._init_collectives()
-        self.usable = False
-        self.load_record: Optional[dict] = None
-        self._init_kv_cache_mode()
-        self._init_diagnostics()
         #: Per sparse layer, per global expert: gate and up input scales bitwise equal.
         self._shared_fc1: dict = {}
 
@@ -218,10 +158,6 @@ class BeamCheckpointLayoutNvfp4Sm103Tp4(BeamCheckpointLayoutBf16Sm103Tp4):
         if not isinstance(spec, QuantSpec):
             raise ValueError(f"layer {layer} expert {expert} {proj!r} is not held")
         return {f: self.bank(spec.bank, f)[expert] for f in BANK_FIELDS}
-
-    def ledger(self) -> list:
-        """This component's ownership rows (see ``layout.ownership_ledger``)."""
-        return ownership_ledger(self.specs)
 
     # ------------------------------------------------------------------ loading
 
@@ -295,118 +231,52 @@ class BeamCheckpointLayoutNvfp4Sm103Tp4(BeamCheckpointLayoutBf16Sm103Tp4):
         self._shared_fc1[layer] = shared
         return {"scalars": len(values), "gate_up_input_scales_shared": sum(shared)}
 
-    @torch.no_grad()
-    def load(self, checkpoint_dir: str, *, record_digests: bool = True) -> dict:
-        """Stream the selected tensors of a caller-supplied checkpoint into rank-local storage.
-
-        Collective: every rank calls it. config.json must equal the constructed configuration,
-        hf_quant_config.json must be the NVFP4 recipe (``layout.check_recipe``), and every
-        stored tensor of the whole model must be exactly what the layout needs before any
-        storage changes. Expert codes and block-scale bytes are copied unchanged (block scales
-        then swizzled), scalars must be finite and positive, block scales finite and
-        non-negative. The component is unusable from the first write until every rank reports a
-        complete load; a failure on any rank raises ``LoadError`` on all ranks. Returns the
-        load record (recipe, coverage, source digests, bytes read).
-        """
-        self._check_diagnostics_agree()
-        error: Optional[BaseException] = None
-        catalog = None
-        recipe = None
-        try:
-            with open(os.path.join(checkpoint_dir, "config.json")) as f:
-                stored = json.load(f)
-            if stored != self.config:
-                differing = sorted(
-                    k for k in set(stored) | set(self.config) if stored.get(k) != self.config.get(k)
-                )
-                raise CheckpointFormatError(
-                    f"config.json differs from the constructed configuration: {differing[:8]}"
-                )
-            with open(os.path.join(checkpoint_dir, QUANT_CONFIG_FILE)) as f:
-                quant = json.load(f)
-            full = tensor_specs(self.config)
-            recipe = check_recipe(quant, full)
-            catalog = SafetensorsCatalog(checkpoint_dir)
-            validate(catalog, stored_entries(full), complete=True)
-        except Exception as exc:  # Keep rank-local failures inside the collective protocol.
-            error = exc
-        if failure := load_failure_details(self.mapping, error is None, error):
-            raise LoadError(
-                f"rank {self.rank}: checkpoint rejected before loading: {failure}"
-            ) from error
-
-        self.usable = False
-        self.load_record = None
-        self._shared_fc1 = {}
-        coverage = OrderedDict()
-        scalars = OrderedDict()
-        reader = None
-        bytes_read = reads = 0
-
-        def first_entry(spec):
-            return catalog.entries[
-                spec.name + ".weight" if isinstance(spec, QuantSpec) else spec.name
-            ]
-
-        try:
-            reader = TileReader()
-            order = sorted(
-                self.specs.values(), key=lambda s: (first_entry(s).path, first_entry(s).begin)
-            )
-            sparse = [layer for layer in self.layers if self.schedule.is_sparse(layer)]
-            for spec in order:
-                digest = hashlib.sha256() if record_digests else None
-                if isinstance(spec, QuantSpec):
-                    coverage[spec.name] = self._load_expert(catalog, reader, spec, digest)
-                    continue
-                dst = self.tensor(spec.name)
-                read_slice_into(catalog, reader, spec, self.rank, dst, digest=digest)
-                coverage[spec.name] = {
-                    "interval": spec.interval(self.rank),
-                    "local_shape": list(dst.shape),
-                    "dtype": str(dst.dtype),
-                    "source_sha256": digest.hexdigest() if digest is not None else None,
-                }
-            for layer in sparse:
-                scalars[layer] = self._load_scalars(catalog, reader, layer)
-        except Exception as exc:  # Every rank must reach the completion agreement.
-            error = exc
-        finally:
-            if reader is not None:
-                bytes_read, reads = reader.bytes_read, reader.reads
-                try:
-                    reader.close()
-                except Exception as exc:  # Cleanup failure must also reach the agreement.
-                    if error is None:
-                        error = exc
-        complete = (
-            error is None and list(coverage) == [s.name for s in order] and list(scalars) == sparse
-        )
-        if failure := load_failure_details(self.mapping, complete, error):
-            self._shared_fc1 = {}
-            raise LoadError(
-                f"rank {self.rank}: load did not complete on every rank: {failure}"
-            ) from error
-        self.load_record = {
-            "rank": self.rank,
-            "checkpoint_dir": os.fspath(checkpoint_dir),
-            "layers": list(self.layers),
+    def _validate_catalog(
+        self, checkpoint_dir: str, catalog: SafetensorsCatalog, stored: dict
+    ) -> dict:
+        full = tensor_specs(self.config)
+        recipe = check_recipe(read_quant_config(checkpoint_dir, stored), full)
+        validate(catalog, stored_entries(full), complete=True)
+        return {
             "recipe": recipe,
             "contract": dict(nvfp4_expert.CONTRACT),
-            "tensors": len(coverage),
             "expert_projections": len(self.expert_names),
-            "scalars": dict(scalars),
-            "bytes_read": bytes_read,
-            "reads": reads,
-            "coverage": coverage,
         }
-        self.usable = True
-        return self.load_record
+
+    def _reset_loaded_state(self) -> None:
+        self._shared_fc1 = {}
+
+    @staticmethod
+    def _entry_name(spec: TensorSpec | QuantSpec) -> str:
+        return spec.name + ".weight" if isinstance(spec, QuantSpec) else spec.name
+
+    def _load_tensor(
+        self,
+        catalog: SafetensorsCatalog,
+        reader: TileReader,
+        spec: TensorSpec | QuantSpec,
+        digest: Optional["hashlib._Hash"],
+    ) -> dict:
+        if isinstance(spec, QuantSpec):
+            return self._load_expert(catalog, reader, spec, digest)
+        record = super()._load_tensor(catalog, reader, spec, digest)
+        # Packed expert ownership is recorded by _load_expert; dense tensors are unbanked.
+        record.pop("bank")
+        record.pop("slot")
+        return record
+
+    def _load_extra(self, catalog: SafetensorsCatalog, reader: TileReader) -> dict:
+        scalars = {
+            layer: self._load_scalars(catalog, reader, layer)
+            for layer in self.layers
+            if self.schedule.is_sparse(layer)
+        }
+        return {"scalars": scalars}
 
     # ------------------------------------------------------------------ computations
 
     @torch.no_grad()
-    def moe(self, layer: int, h: torch.Tensor, capture: Optional[dict] = None) -> torch.Tensor:
+    def moe(self, layer: int, h: torch.Tensor) -> torch.Tensor:
         """Normalized input ``[T, hidden]`` -> MoE output after the one all-reduce.
 
         The replicated FP32 router, the diagnostic-mode all-rank agreement on its input, ids
@@ -416,82 +286,18 @@ class BeamCheckpointLayoutNvfp4Sm103Tp4(BeamCheckpointLayoutBf16Sm103Tp4):
         """
         routing = self.route(layer, h)
         ids, weights = routing["ids"], routing["weights"]
-        digests = self._digests_agree((h, ids, weights)) if self.diagnostics else None
+        if self.diagnostics:
+            self._digests_agree((h, ids, weights))
         bank = self.expert_bank(layer)
         shared = self._shared_fc1[layer]
-        calls = [] if capture is not None else None
 
         def provider(expert_id: int, rows: torch.Tensor) -> torch.Tensor:
-            return nvfp4_expert.nvfp4_swiglu_expert(rows, bank, expert_id, shared[expert_id], calls)
+            return nvfp4_expert.nvfp4_swiglu_expert(rows, bank, expert_id, shared[expert_id])
 
-        local = dispatch_combine.beam_dispatch_combine(h, ids, weights, provider)
+        local = dispatch_combine.dispatch_and_combine(h, ids, weights, provider)
         # The four BF16 rank partials are summed once in FP32 and the sum is rounded once.
         out = self.all_reduce(local.float()).to(torch.bfloat16)
-        if capture is not None:
-            _rec(capture, _moe_capture(routing, calls, local, out))
-            if digests is not None:
-                capture["moe.agreement_sha256"] = digests
         return out
-
-
-def _flat_with_offsets(parts: list) -> tuple:
-    offsets = [0]
-    for p in parts:
-        offsets.append(offsets[-1] + p.numel())
-    return torch.cat([p.reshape(-1) for p in parts]), torch.tensor(offsets, dtype=torch.int64)
-
-
-def _moe_capture(routing: dict, calls: list, local: torch.Tensor, out: torch.Tensor) -> dict:
-    """Routing intermediates and every expert call's operands, in call (ascending expert) order."""
-    ids = routing["ids"]
-    tokens = [(ids == c["expert"]).any(-1).nonzero().reshape(-1) for c in calls]
-    fc1_sf, fc1_off = _flat_with_offsets([c["sf1"] for c in calls])
-    fc2_sf, fc2_off = _flat_with_offsets([c["sf2"] for c in calls])
-    items = {
-        "moe.logits": routing["logits"],
-        "moe.scores": routing["scores"],
-        "moe.selection": routing["selection_scores"],
-        "moe.group_scores": routing["group_scores"],
-        "moe.groups": routing["groups"],
-        "moe.masked": routing["masked_selection_scores"],
-        "moe.ids": ids,
-        "moe.weights": routing["weights"],
-        "moe.call_expert": torch.cat(
-            [torch.full((c["rows"].shape[0],), c["expert"], dtype=torch.int64) for c in calls]
-        ),
-        "moe.call_token": torch.cat(tokens),
-        "moe.call_rows": torch.tensor([c["rows"].shape[0] for c in calls], dtype=torch.int64),
-        "moe.call_shared_fc1": torch.tensor([c["fc1_up"] is None for c in calls]),
-        "moe.call_scalars": torch.stack([c["scalars"] for c in calls]),
-        "moe.expert_in": torch.cat([c["rows"] for c in calls]),
-        "moe.fc1_fp4": torch.cat([c["fc1"] for c in calls]),
-        "moe.fc1_sf_swizzled": fc1_sf,
-        "moe.fc1_sf_offsets": fc1_off,
-        "moe.gate": torch.cat([c["gate"] for c in calls]),
-        "moe.up": torch.cat([c["up"] for c in calls]),
-        "moe.silu": torch.cat([c["silu"] for c in calls]),
-        "moe.product": torch.cat([c["product"] for c in calls]),
-        "moe.act": torch.cat([c["act"] for c in calls]),
-        "moe.fc2_fp4": torch.cat([c["fc2"] for c in calls]),
-        "moe.fc2_sf_swizzled": fc2_sf,
-        "moe.fc2_sf_offsets": fc2_off,
-        "moe.tp.y": torch.cat([c["y"] for c in calls]),
-        "moe.tp.local_out": local,
-        "moe.output": out,
-        "mlp_out": out,
-    }
-    unshared = [c for c in calls if c["fc1_up"] is not None]
-    if unshared:
-        sf, off = _flat_with_offsets([c["sf1_up"] for c in unshared])
-        items.update(
-            {
-                "moe.fc1_up_expert": torch.tensor([c["expert"] for c in unshared]),
-                "moe.fc1_up_fp4": torch.cat([c["fc1_up"] for c in unshared]),
-                "moe.fc1_up_sf_swizzled": sf,
-                "moe.fc1_up_sf_offsets": off,
-            }
-        )
-    return items
 
 
 __all__ = [

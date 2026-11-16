@@ -18,9 +18,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
-    _attention,
-)
+from tensorrt_llm._torch._experimental.modeling_v2.models.beam import _attention
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4.model import (  # noqa: E501
     BeamFullModelNvfp4Sm103Tp4,
 )

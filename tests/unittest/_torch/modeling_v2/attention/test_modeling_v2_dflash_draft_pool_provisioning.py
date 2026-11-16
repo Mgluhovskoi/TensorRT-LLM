@@ -39,7 +39,7 @@ from tensorrt_llm._torch.pyexecutor.kv_cache.kv_cache_manager_v2 import (
     Role,
 )
 from tensorrt_llm._torch.pyexecutor.resource_manager import CacheTypeCpp, DataType
-from tensorrt_llm._torch.speculative.dflash import DFlashWorker, dflash_block_kv_lookahead
+from tensorrt_llm._torch.speculative.dflash import DFlashWorker
 from tensorrt_llm.llmapi.llm_args import DFlashDecodingConfig, KvCacheConfig
 from tensorrt_llm.mapping import Mapping
 
@@ -70,6 +70,16 @@ def _manager() -> KVCacheManagerV2:
         dtype=DataType.FP8,
         spec_config=_spec(),
         is_draft=True,
+        layer_specs=[
+            KVCacheLayerSpec(
+                global_layer_id=0,
+                owner=KVCacheLayerOwner.DRAFT,
+                dtype=DataType.FP8,
+                num_kv_heads=KV_HEADS,
+                head_dim=HEAD_DIM,
+                buffer_roles=(Role.KEY, Role.VALUE),
+            )
+        ],
     )
 
 
@@ -253,9 +263,8 @@ def test_draft_pool_reserves_the_block_lookahead(layout):
     mgr = LAYOUTS[layout]()
     try:
         spec = _spec()
-        assert mgr._kv_reserve_draft_tokens == (
-            spec.max_total_draft_tokens + dflash_block_kv_lookahead(spec)
-        )
+        assert mgr._kv_reserve_draft_tokens == spec.max_total_draft_tokens
+        assert mgr._generation_kv_capacity_headroom >= K + 1 + BLOCK
         check_draft_pool_reserve(spec, BLOCK, mgr)
     finally:
         mgr.shutdown()
@@ -276,3 +285,15 @@ def test_binding_refuses_a_pool_without_the_block_lookahead(reserve, ok):
     else:
         with pytest.raises(RuntimeError, match="noise block"):
             check_draft_pool_reserve(worker.spec_config, BLOCK, manager)
+
+
+@pytest.mark.parametrize("headroom,ok", [(K + BLOCK, False), (K + 1 + BLOCK, True)])
+def test_v2_binding_checks_total_capacity(headroom, ok):
+    from tensorrt_llm._torch.speculative.dflash import check_draft_pool_reserve
+
+    manager = _Manager(_kv_reserve_draft_tokens=K, _generation_kv_capacity_headroom=headroom)
+    if ok:
+        check_draft_pool_reserve(_spec(), BLOCK, manager)
+    else:
+        with pytest.raises(RuntimeError, match="noise block"):
+            check_draft_pool_reserve(_spec(), BLOCK, manager)

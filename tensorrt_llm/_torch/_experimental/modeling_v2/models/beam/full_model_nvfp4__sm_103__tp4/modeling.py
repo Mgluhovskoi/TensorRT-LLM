@@ -115,7 +115,7 @@ class _Target:
 
     def __init__(self, model: BeamFullModelNvfp4Sm103Tp4) -> None:
         self.model = model
-        self.traced = set()
+        self.traced: set[str] = set()
 
     if TYPE_CHECKING:
 
@@ -171,11 +171,11 @@ class PrefillTarget(_Target):
         self,
         attn_metadata: TrtllmAttentionMetadata,
         input_ids: torch.Tensor,
-        position_ids: torch.Tensor,
+        position_ids: torch.Tensor | None,
         *,
         return_context_logits: bool,
     ) -> torch.Tensor:
-        rows = "all" if return_context_logits else None
+        rows: LogitRows = "all" if return_context_logits else None
         return self._run(attn_metadata, input_ids, position_ids, rows)
 
 
@@ -188,7 +188,7 @@ class DecodeTarget(_Target):
         self,
         attn_metadata: TrtllmAttentionMetadata,
         input_ids: torch.Tensor,
-        position_ids: torch.Tensor,
+        position_ids: torch.Tensor | None,
         *,
         return_context_logits: bool,
     ) -> torch.Tensor:
@@ -417,7 +417,7 @@ class ModelingV2BeamFullModelNvfp4Sm103Tp4(nn.Module):
                 f"{self.checkpoint_dir!r}"
             )
         self._check_kv_cache_scales(kv_cache_scales)
-        self.load_record = self.model.load(checkpoint_dir)
+        self.load_record = self.model.load(checkpoint_dir, record_digests=self.model.diagnostics)
         self._apply_kv_cache_scales(kv_cache_scales)
         return self.load_record
 

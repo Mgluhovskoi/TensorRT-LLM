@@ -4,13 +4,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
-from ..._router_index import NoTarget, routes
+from tensorrt_llm.quantization.modelopt_config import (
+    canonicalize_quant_algo,
+    read_modelopt_quant_config,
+)
+
+from ..._router_index import NoTarget, engine_kv_cache_quant_algo, routes
 from ._constants import SM, SUPPORTED_CONFIG, WORLD_SIZE
 from .full_model_nvfp4__sm_103__tp4.limits import MAX_NUM_TOKENS
 
 if TYPE_CHECKING:
+    from transformers import PretrainedConfig
+
     from tensorrt_llm._torch.model_config import ModelConfig
     from tensorrt_llm.llmapi.llm_args import TorchLlmArgs
 
@@ -20,11 +27,13 @@ if TYPE_CHECKING:
 DFLASH_MAX_DRAFT_LEN = 7
 
 
-def _quant_algo(pretrained_config: Any) -> Optional[str]:
+def _quant_algo(pretrained_config: PretrainedConfig | None) -> str | None:
     quant = getattr(pretrained_config, "quantization_config", None)
     if isinstance(quant, dict):
-        return quant.get("quant_algo")
-    return getattr(quant, "quant_algo", None)
+        if "quantization" in quant or "quant_method" in quant or "producer" in quant:
+            return read_modelopt_quant_config(quant).get("quant_algo")
+        return canonicalize_quant_algo(quant.get("quant_algo"))
+    return canonicalize_quant_algo(getattr(quant, "quant_algo", None))
 
 
 def speculation_refusal(spec_config: Any, llm_args: Optional[Any] = None) -> Optional[str]:
@@ -86,6 +95,13 @@ def engine_refusal(llm_args: Optional[Any], spec_config: Optional[Any] = None) -
         reasons.append("load_format must be auto")
     if getattr(llm_args, "max_beam_width", 1) not in (None, 1):
         reasons.append("beam search is not supported; max_beam_width must be 1")
+    if getattr(llm_args, "attn_backend", "TRTLLM") != "TRTLLM":
+        reasons.append("attn_backend must be TRTLLM")
+    for field in ("lora_config", "kv_connector_config"):
+        if getattr(llm_args, field, None) is not None:
+            reasons.append(f"{field} is not supported by this Beam target")
+    if getattr(llm_args, "enable_return_routed_experts", False):
+        reasons.append("returning routed experts is not supported")
     cache = getattr(llm_args, "kv_cache_config", None)
     paged_context = (
         getattr(llm_args, "enable_chunked_prefill", False)
@@ -132,13 +148,7 @@ def checkpoint_refusal(pretrained_config: Any, spec_config: Optional[Any]) -> Op
 
 @routes("BeamForCausalLM")
 def route(
-    pretrained_config: Any,
-    mapping: Any,
-    compute_capability: Tuple[int, int],
-    spec_config: Optional[Any],
-    kv_cache_quant_algo: Optional[Any],
-    model_config: Optional[ModelConfig] = None,
-    llm_args: Optional[TorchLlmArgs] = None,
+    model_config: ModelConfig, llm_args: TorchLlmArgs, compute_capability: tuple[int, int]
 ) -> type:
     """Return the target class for this deployment, or raise ``NoTarget`` saying why none fits.
 
@@ -152,6 +162,10 @@ def route(
     """
     from tensorrt_llm.quantization.mode import QuantAlgo
 
+    pretrained_config = model_config.pretrained_config
+    mapping = model_config.mapping
+    spec_config = model_config.spec_config
+    kv_cache_quant_algo = engine_kv_cache_quant_algo(model_config, llm_args)
     shape = (
         pretrained_config.num_hidden_layers,
         pretrained_config.hidden_size,
@@ -165,7 +179,13 @@ def route(
         mapping.moe_ep_size,
         bool(mapping.enable_attention_dp),
     )
-    quant_algo = _quant_algo(pretrained_config)
+    try:
+        quant_algo = _quant_algo(pretrained_config)
+    except ValueError as exc:
+        raise NoTarget(str(exc)) from exc
+    if quant_algo is None:
+        algo = getattr(model_config.quant_config, "quant_algo", None)
+        quant_algo = getattr(algo, "value", algo)
     speculation = speculation_refusal(spec_config, llm_args)
     engine = engine_refusal(llm_args, spec_config)
     refusal = None

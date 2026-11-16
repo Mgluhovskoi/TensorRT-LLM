@@ -33,8 +33,7 @@ from tensorrt_llm.llmapi.llm_args import (
     CacheTransceiverConfig, CapacitySchedulerPolicy, ContextSchedulingPolicy,
     KVEventsConfig, KvCacheCompressionConfig, KvCacheConfig,
     MultimodalEncoderSchedulingPolicy, PeftCacheConfig, SchedulerConfig,
-    SparseAttentionConfig, SpeculativeConfig, TorchLlmArgs, WaitingQueuePolicy,
-    disagg_shares_draft_kv)
+    SparseAttentionConfig, SpeculativeConfig, TorchLlmArgs, WaitingQueuePolicy)
 # isort: on
 from tensorrt_llm._torch.peft.lora.config import (
     LoraConfig, get_default_trtllm_modules_to_hf_modules)
@@ -5218,9 +5217,9 @@ def create_py_executor_resources(
         mamba_cache_manager = kv_cache_manager
 
     # A model that declares a disaggregated handoff contributes its semantic cache
-    # identity, the record it freezes for each finished context request and, when its
-    # drafter's state lives in the separate draft manager, that manager's pages to every
-    # transfer. Models without one keep the target-only transfer.
+    # identity and the record it freezes for each finished context request. Its draft
+    # layers must share the target manager so all required pages travel together.
+    # Models without a handoff declaration keep the standard transfer path.
     transfer_kwargs = {}
     cache_identity_fn = getattr(model_engine.model, "disagg_cache_identity",
                                 None)

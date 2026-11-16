@@ -53,8 +53,8 @@ import torch
 from tensorrt_llm._torch.attention.backends.trtllm import TrtllmAttentionMetadata
 from tensorrt_llm.mapping import Mapping as ParallelMapping
 
+from .. import _attention
 from .._constants import SUPPORTED_CONFIG
-from . import _attention
 from .component import BeamCheckpointLayoutNvfp4Sm103Tp4
 from .limits import MAX_NUM_TOKENS
 
@@ -140,6 +140,8 @@ class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
             raise ValueError(f"the KV cache manager states {len(windows)} attention windows")
         for layer, window in enumerate(windows[:NUM_LAYERS]):
             if self.schedule.is_sliding(layer):
+                # Retention may exceed the attention window, or cover a shorter
+                # whole sequence. The attention operator still applies self.window.
                 ok = window is None or int(window) >= min(self.window, manager.max_seq_len)
             else:
                 ok = window is None or int(window) >= manager.max_seq_len
@@ -275,7 +277,6 @@ class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
         attn_metadata: TrtllmAttentionMetadata,
         *,
         logit_rows: LogitRows = None,
-        layer_capture: Optional[Callable[[int], Optional[dict]]] = None,
         trace: Optional[list] = None,
         generation_rows: int = 1,
         extra_kv_tokens: int = 0,
@@ -285,8 +286,7 @@ class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
     ) -> Union[torch.Tensor, tuple]:
         """One engine step through all 52 layers; FP32 softcapped logits ``[R, vocab]``.
 
-        ``layer_capture(layer)`` may return a dict that receives that block's named
-        intermediates (``block``'s capture); ``trace``, when a list, receives one record per
+        ``trace``, when a list, receives one record per
         executed stage in execution order (embedding with the step's request spans, each
         logical layer with its kind and window, final norm, head). ``generation_rows`` and
         ``extra_kv_tokens`` state the step's speculative shape (``check_call``);
@@ -311,13 +311,11 @@ class BeamFullModelNvfp4Sm103Tp4(BeamCheckpointLayoutNvfp4Sm103Tp4):
         if trace is not None:
             trace.append({"stage": "embed", "tokens": num_tokens, "requests": spans})
         for layer in range(NUM_LAYERS):
-            capture = layer_capture(layer) if layer_capture is not None else None
             x = self.block(
                 layer,
                 x,
                 positions,
                 attn_metadata,
-                capture,
                 generation_rows=generation_rows,
                 extra_kv_tokens=extra_kv_tokens,
                 call_checked=True,

@@ -9,8 +9,11 @@ import pytest
 import torch
 
 from tensorrt_llm._torch._experimental.modeling_v2 import _router_index
-from tensorrt_llm._torch._experimental.modeling_v2._router_index import NoTarget, routing_module
+from tensorrt_llm._torch._experimental.modeling_v2._router_index import NoTarget
 from tensorrt_llm.llmapi.reasoning_parser import BeamHarmonyTextParser, ReasoningParserFactory
+
+__extra_import_path__ = [".."]
+from _routing_support import route as _route  # noqa: E402
 
 pytestmark = pytest.mark.cpu_only
 
@@ -113,7 +116,7 @@ _FILES = {}
 
 def checkpoint_config() -> dict:
     """The supported checkpoint's config.json, as the target's layout states it."""
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4.layout_bf16 import (  # noqa: E501
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4.layout_bf16 import (  # noqa: E501
         SUPPORTED_CONFIG,
     )
 
@@ -207,7 +210,7 @@ def _mapping(**overrides):
 def test_route_claims_only_the_supported_deployment():
     from tensorrt_llm.quantization.mode import QuantAlgo
 
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     target = route(_beam_config(), _mapping(), (10, 3), None, None)
     assert target.__name__ == "ModelingV2BeamFullModelNvfp4Sm103Tp4"
     assert route(_beam_config(), _mapping(), (10, 3), None, QuantAlgo.FP8) is target
@@ -268,7 +271,7 @@ def test_route_refuses_an_unsupported_token_budget_before_reading_the_checkpoint
 ):
     """The target computes at most 8192 tokens per engine step: a larger (or empty) budget is
     refused by selection, before the checkpoint's files are read, and ``require`` fails with it."""
-    routing = routing_module("BeamForCausalLM")
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam import routing
 
     def unexpected_read(*args):
         pytest.fail("an unsupported budget must be refused before reading the checkpoint")
@@ -277,7 +280,7 @@ def test_route_refuses_an_unsupported_token_budget_before_reading_the_checkpoint
     args = SimpleNamespace(disable_overlap_scheduler=True, max_num_tokens=max_num_tokens)
     reason = rf"max_num_tokens {max_num_tokens} is outside \[1, 8192\]"
     with pytest.raises(NoTarget, match=reason):
-        routing.route(_beam_config(), _mapping(), (10, 3), _dflash(), None, llm_args=args)
+        _route(_beam_config(), _mapping(), (10, 3), _dflash(), None, llm_args=args)
     monkeypatch.setattr(_router_index, "_device_compute_capability", lambda: (10, 3))
     config = SimpleNamespace(
         pretrained_config=_beam_config(),
@@ -296,7 +299,7 @@ def test_route_refuses_an_unsupported_token_budget_before_reading_the_checkpoint
 
 @pytest.mark.parametrize("max_num_tokens", [1, 8192])
 def test_route_accepts_token_budget_boundaries(max_num_tokens):
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     args = SimpleNamespace(disable_overlap_scheduler=True, max_num_tokens=max_num_tokens)
     target = route(_beam_config(), _mapping(), (10, 3), _dflash(), None, llm_args=args)
     assert target.__name__ == "ModelingV2BeamFullModelNvfp4Sm103Tp4"
@@ -344,7 +347,7 @@ def _mtp():
 
 
 def test_route_claims_the_dflash_deployment():
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     target = route(_beam_config(), _mapping(), (10, 3), _dflash(), None)
     assert target.__name__ == "ModelingV2BeamFullModelNvfp4Sm103Tp4"
     args = SimpleNamespace(disable_overlap_scheduler=True)
@@ -371,7 +374,7 @@ def test_route_claims_the_dflash_deployment():
     ids=["vanilla", "fa4", "k15", "k3", "schedule", "rejection", "no-drafter", "overlap", "mtp"],
 )
 def test_route_refuses_other_speculation_clearly(spec, args, reason):
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     with pytest.raises(NoTarget, match=reason):
         route(_beam_config(), _mapping(), (10, 3), spec(), None, llm_args=args)
 
@@ -473,7 +476,7 @@ def test_selection_and_construction_refuse_the_same_checkpoint(tmp_path, config,
     with pytest.raises(ValueError) as built:
         modeling._checkpoint_config(SimpleNamespace(name_or_path=directory))
     reason = str(built.value)
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     with pytest.raises(NoTarget) as declined:
         route(_beam_config(name_or_path=directory), _mapping(), (10, 3), None, None)
     assert reason in str(declined.value)
@@ -512,7 +515,7 @@ def test_selection_refuses_a_drafter_the_target_would_refuse(tmp_path, drafter, 
     directory.mkdir()
     if drafter is not None:
         (directory / "config.json").write_text(json.dumps(drafter))
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     with pytest.raises(NoTarget, match=reason):
         route(_beam_config(), _mapping(), (10, 3), _dflash(speculative_model=str(directory)), None)
 
@@ -522,7 +525,7 @@ def test_supported_checkpoint_reaches_the_target_with_its_config():
         modeling,
     )
 
-    route = routing_module("BeamForCausalLM").route
+    route = _route
     assert route(_beam_config(), _mapping(), (10, 3), _dflash(), None).__name__ == (
         "ModelingV2BeamFullModelNvfp4Sm103Tp4"
     )
@@ -620,7 +623,7 @@ def test_read_kv_cache_scales_refuses_scales_unusable_in_fp32(tmp_path, section,
 def test_fp8_kv_scale_pairs_are_the_ops_fp32_factors():
     import torch
 
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4._attention import (
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._attention import (
         fp8_kv_scale_pairs,
     )
 
@@ -637,7 +640,7 @@ def test_fp8_kv_scale_pairs_are_the_ops_fp32_factors():
 def test_target_kv_cache_fp8_refuses_scales_unusable_in_fp32():
     import torch
 
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4.component_bf16 import (  # noqa: E501
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4.component_bf16 import (  # noqa: E501
         BeamCheckpointLayoutBf16Sm103Tp4,
     )
 

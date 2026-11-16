@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-__extra_import_path__ = [".", "dense_block_bf16__sm_103__tp1"]
+__extra_import_path__ = [".", "_components/dense_block"]
 
 import _dense_block_reference as reference  # noqa: E402
 from _beam_component_support import TorchCallTrace, cache_rows, compare  # noqa: E402

@@ -30,17 +30,13 @@ def test_distributed_loading(tmp_path, monkeypatch, packed):
 
     from safetensors.torch import save_file
 
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
-        component as nvfp4,
-    )
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4 import (
         component_bf16 as bf16,
     )
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4 import layout_bf16 as layout
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4 import loader_bf16 as loader
     from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
-        layout_bf16 as layout,
-    )
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
-        loader_bf16 as loader,
+        component as nvfp4,
     )
     from tensorrt_llm._torch.distributed.communicator import Distributed
     from tensorrt_llm.mapping import Mapping
@@ -66,10 +62,10 @@ def test_distributed_loading(tmp_path, monkeypatch, packed):
         bf16._attr(spec.name),
         torch.nn.Parameter(torch.zeros_like(source, device=device), requires_grad=False),
     )
-    monkeypatch.setattr(bf16, "tensor_specs", lambda *args: obj.specs)
+    monkeypatch.setattr(cls, "_tensor_specs", staticmethod(lambda *args: obj.specs))
     if packed:
         monkeypatch.setattr(nvfp4, "tensor_specs", lambda *args: obj.specs)
-        (tmp_path / "hf_quant_config.json").write_text("{}")
+        monkeypatch.setattr(nvfp4, "read_quant_config", lambda *args: {})
         monkeypatch.setattr(nvfp4, "check_recipe", lambda *args: {})
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(obj.config))
@@ -79,9 +75,8 @@ def test_distributed_loading(tmp_path, monkeypatch, packed):
     )
     # Keep staging tiny as well as the generated tensor; retain real CUDA copies.
     reader_type = loader.TileReader
-    load_module = nvfp4 if packed else bf16
-    monkeypatch.setattr(load_module, "TileReader", lambda: reader_type(tile_bytes=16))
-    original_read = load_module.read_slice_into
+    monkeypatch.setattr(bf16, "TileReader", lambda: reader_type(tile_bytes=16))
+    original_read = bf16.read_slice_into
 
     def fail_read(*args, **kwargs):
         if rank == 2:
@@ -99,7 +94,7 @@ def test_distributed_loading(tmp_path, monkeypatch, packed):
     config_path.write_text(json.dumps(obj.config))
 
     with monkeypatch.context() as patch:
-        patch.setattr(load_module, "read_slice_into", fail_read)
+        patch.setattr(bf16, "read_slice_into", fail_read)
         with pytest.raises(bf16.LoadError, match="rank 2: OSError.*injected rank-two read failure"):
             obj.load(str(tmp_path), record_digests=False)
     assert not obj.usable and obj.load_record is None
@@ -119,7 +114,7 @@ def test_catalog_collectives() -> None:
     if mpi_disabled() or mpi_world_size() != 4 or torch.cuda.device_count() < 4:
         pytest.skip("requires MPI with four ranks and four visible GPUs on one node")
 
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4 import (
         component_bf16 as bf16,
     )
     from tensorrt_llm.mapping import Mapping

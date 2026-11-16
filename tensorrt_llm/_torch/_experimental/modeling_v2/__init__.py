@@ -15,7 +15,7 @@ Entry is a single LLM API argument::
     LLM(model, modeling_v2="require")
 
 ``off`` is byte-for-byte the built-in behaviour: the resolver returns
-immediately and nothing in this package is imported. ``auto`` (the default)
+immediately and no routing module or target is imported. ``auto`` (the default)
 uses a target when one claims the configuration and falls back to the built-in
 implementation otherwise. A target decorated ``@disable_v2_by_default`` is used
 only when the caller sets ``modeling_v2`` itself. ``require`` raises instead of

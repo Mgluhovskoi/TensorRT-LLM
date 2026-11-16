@@ -37,9 +37,8 @@ import torch
 from torch.overrides import TorchFunctionMode, resolve_name
 
 if TYPE_CHECKING:
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.moe_bf16__sm_103__tp1.moe import (
-        BeamMoeBf16Sm103Tp1,
-    )
+    from _components.moe.moe import BeamMoeBf16Sm103Tp1
+
     from tensorrt_llm._torch.attention.backends.trtllm import TrtllmAttentionMetadata
 
 #: CPU op names of PyTorch's SDPA paths, and CUDA kernel names of attention kernels.
@@ -590,8 +589,8 @@ _BAD_INPUT_MATCH = {
     "empty": "supported token counts per call are",
     "non_contiguous": "hidden_states must be contiguous",
     "positions_offset": "its positions must be exactly those",
-    "float_positions": "position_ids must be an integer",
-    "positions_shape": "position_ids must be an integer",
+    "float_positions": r"position_ids must be an int32/int64 tensor of shape \(1, 17\) on cuda",
+    "positions_shape": r"position_ids must be an int32/int64 tensor of shape \(1, 17\) on cuda",
 }
 
 

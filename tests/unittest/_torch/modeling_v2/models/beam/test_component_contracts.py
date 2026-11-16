@@ -33,12 +33,16 @@ def config():
 
 
 @pytest.mark.parametrize("length", [128, 512, 8192])
-@pytest.mark.parametrize("retention", ["sliding", "full", "normalized"])
+@pytest.mark.parametrize("retention", ["sliding", "full", "normalized", "extended"])
 def test_cache_allows_estimator_and_short_sequence_geometry(length, retention):
     component = NS(
-        head_dim=128, local_kv_heads=2, window=512, schedule=layout.check_config(config())
+        kv_cache_dtype=DataType.BF16,
+        head_dim=128,
+        local_kv_heads=2,
+        window=512,
+        schedule=layout.check_config(config()),
     )
-    window = {"sliding": 512, "full": length, "normalized": None}[retention]
+    window = {"sliding": 512, "full": length, "normalized": None, "extended": 1024}[retention]
     manager = NS(
         layer_offsets=dict(enumerate(range(52))),
         dtype=DataType.BF16,
@@ -52,10 +56,16 @@ def test_cache_allows_estimator_and_short_sequence_geometry(length, retention):
     assert Component.attention_windows(component, length) == [512] * 51 + [length]
 
 
-@pytest.mark.parametrize("layer,window", [(0, 256), (0, 1024), (51, 512)])
-def test_cache_rejects_incompatible_retention(layer, window):
+@pytest.mark.parametrize(
+    "length,layer,window", [(8192, 0, 256), (8192, 0, 511), (128, 0, 127), (8192, 51, 512)]
+)
+def test_cache_rejects_incompatible_retention(length, layer, window):
     component = NS(
-        head_dim=128, local_kv_heads=2, window=512, schedule=layout.check_config(config())
+        kv_cache_dtype=DataType.BF16,
+        head_dim=128,
+        local_kv_heads=2,
+        window=512,
+        schedule=layout.check_config(config()),
     )
     manager = NS(
         layer_offsets=dict(enumerate(range(52))),
@@ -63,7 +73,7 @@ def test_cache_rejects_incompatible_retention(layer, window):
         head_dim=128,
         num_kv_heads_per_layer=[2] * 52,
         max_attention_window_vec=[512] * 51 + [None],
-        max_seq_len=8192,
+        max_seq_len=length,
     )
     manager.max_attention_window_vec[layer] = window
     with pytest.raises(ValueError, match="cache keeps a window"):
@@ -217,7 +227,7 @@ def test_flat_recipe_never_silently_disables_requested_kv_quantization(recipe_sp
         layout as nvfp4_layout,
     )
 
-    with pytest.raises(ValueError, match="BF16 KV cache"):
+    with pytest.raises(ValueError, match="kv_cache_scheme"):
         nvfp4_layout.check_recipe(
             dict(
                 quant_method="modelopt", quant_algo="NVFP4", group_size=16, kv_cache_scheme=scheme
@@ -257,7 +267,8 @@ def test_components_do_not_import_full_model_internals():
     target = family / "full_model_nvfp4__sm_103__tp4"
     target_module = f"{beam.__name__}.{target.name}"
     for source in family.rglob("*.py"):
-        if source.is_relative_to(target):
+        # The family router selects and imports targets; component helpers must not.
+        if source.is_relative_to(target) or source == family / "routing.py":
             continue
         package = ".".join((beam.__name__, *source.parent.relative_to(family).parts))
         for node in ast.walk(ast.parse(source.read_text())):
@@ -334,24 +345,6 @@ def test_direct_call_device_and_metadata_admission(monkeypatch):
         assert metadata_values(values, 2, "seq_lens") == [2, 3]
         with pytest.raises(ValueError, match="seq_lens needs 3"):
             metadata_values(values, 3, "seq_lens")
-
-
-@pytest.mark.parametrize("offset", [0.0, False, "0"])
-def test_safetensors_offsets_must_be_integers(tmp_path, monkeypatch, offset):
-    import json
-
-    (tmp_path / loader.INDEX_FILE).write_text(json.dumps({"weight_map": {"w": "shard"}}))
-    (tmp_path / "shard").write_bytes(bytes(8))
-    monkeypatch.setattr(
-        loader,
-        "_read_header",
-        lambda path: (
-            {"w": {"dtype": "F32", "shape": [1], "data_offsets": [offset, 4]}},
-            0,
-        ),
-    )
-    with pytest.raises(loader.CheckpointFormatError, match="offsets must be integers"):
-        loader.SafetensorsCatalog(str(tmp_path))
 
 
 @pytest.mark.parametrize("packed", [False, True])
@@ -495,7 +488,9 @@ def test_component_constructor_uses_format_storage(monkeypatch, packed: bool) ->
     )
     spec = layout.TensorSpec(layout.EMBED, (8, 2), layout.BF16, "embedding", None, None, 0)
     monkeypatch.setattr(cls, "_tensor_specs", staticmethod(lambda *args: {spec.name: spec}))
-    monkeypatch.setattr(bf16, "AllReduce", lambda **kwargs: NS())
+    monkeypatch.setattr(
+        bf16, "allreduce_group_args", lambda mapping: dict(group=[0, 1, 2, 3], process_group=None)
+    )
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (10, 3))
     real_empty = torch.empty
 

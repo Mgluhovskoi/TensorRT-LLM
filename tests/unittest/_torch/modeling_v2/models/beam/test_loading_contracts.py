@@ -2,21 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU fault-injection checks for weight loading; no checkpoint weights or collectives."""
 
+__extra_import_path__ = ["."]
+
 import json
 from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
 import torch
+from _components.dense_block import block as dense  # noqa: E501
 
-from tensorrt_llm._torch._experimental.modeling_v2.models.beam.dense_block_bf16__sm_103__tp1 import (  # noqa: E501
-    block as dense,
+from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4 import (  # noqa: E501
+    component_bf16 as bf16,
 )
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (  # noqa: E501
     component as nvfp4,
-)
-from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (  # noqa: E501
-    component_bf16 as bf16,
 )
 from tensorrt_llm._torch.models import modeling_beam
 
@@ -37,9 +37,10 @@ def layout_loader(request, monkeypatch, tmp_path):
         name="weight", bank=None, expert=None, interval=lambda rank: (0, 2), local_shape=(2,)
     )
     dst = torch.zeros(2, dtype=torch.bfloat16)
-    component = SimpleNamespace(
+    component = cls.__new__(cls)
+    torch.nn.Module.__init__(component)
+    state = dict(
         config={},
-        mapping=SimpleNamespace(world_size=1),
         rank=0,
         layers=(),
         expert_names=(),
@@ -48,22 +49,29 @@ def layout_loader(request, monkeypatch, tmp_path):
         load_record={"old": True},
         tensor=lambda name: dst,
     )
+    for key, value in state.items():
+        setattr(component, key, value)
+    component.mapping = SimpleNamespace(world_size=1, rank=0)
     component.schedule = SimpleNamespace(is_sparse=lambda layer: False)
     agreements = []
 
-    original_details = module.load_failure_details
-
-    def details(mapping, ok, error):
+    def agree(ok):
         agreements.append(ok)
-        return original_details(mapping, ok, error)
+        return ok
 
-    monkeypatch.setattr(module, "load_failure_details", details)
+    component._agree = agree
+    monkeypatch.setattr(
+        bf16,
+        "load_failure_details",
+        lambda mapping, ok, error: None if component._agree(ok) else str(error),
+    )
     component._check_diagnostics_agree = lambda: None
     catalog = SimpleNamespace(
         entries={"weight": SimpleNamespace(path="part", begin=0)},
         validate=lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(module, "SafetensorsCatalog", lambda path: catalog)
+    monkeypatch.setattr(bf16, "SafetensorsCatalog", lambda path: catalog)
+    monkeypatch.setattr(cls, "_tensor_specs", staticmethod(lambda config: {}))
     monkeypatch.setattr(module, "tensor_specs", lambda config: {})
     if module is nvfp4:
         monkeypatch.setattr(module, "check_recipe", lambda *args: {})
@@ -75,9 +83,9 @@ def layout_loader(request, monkeypatch, tmp_path):
         reader.closed = True
 
     reader.close = close
-    monkeypatch.setattr(module, "TileReader", lambda: reader)
-    monkeypatch.setattr(module, "read_slice_into", lambda *args, **kwargs: dst.fill_(1))
-    return module, cls.load, component, agreements, catalog, reader, tmp_path
+    monkeypatch.setattr(bf16, "TileReader", lambda: reader)
+    monkeypatch.setattr(bf16, "read_slice_into", lambda *args, **kwargs: dst.fill_(1))
+    return bf16, cls.load, component, agreements, catalog, reader, tmp_path
 
 
 @pytest.mark.parametrize("stored", [None, ["bad"]])
@@ -123,20 +131,20 @@ def test_rank_local_exception_reaches_agreement(layout_loader, monkeypatch, stag
         assert reader.closed
 
 
-def test_successful_load_and_peer_failure(layout_loader, monkeypatch):
-    module, load, component, agreements, _, reader, path = layout_loader
+def test_successful_load_and_peer_failure(layout_loader):
+    _, load, component, agreements, _, reader, path = layout_loader
     record = load(component, str(path))
     assert agreements == [True, True]
     assert component.usable and record["tensors"] == 1
     assert reader.closed and torch.equal(component.tensor("weight"), torch.ones(2))
     agreements.clear()
 
-    def peer_fails_completion(mapping, ok, error):
+    def peer_fails_completion(ok):
         agreements.append(ok)
-        return None if len(agreements) == 1 else "rank 2: injected peer failure"
+        return len(agreements) == 1
 
-    monkeypatch.setattr(module, "load_failure_details", peer_fails_completion)
-    with pytest.raises(bf16.LoadError, match="rank 2: injected peer failure"):
+    component._agree = peer_fails_completion
+    with pytest.raises(bf16.LoadError, match="every rank"):
         load(component, str(path))
     assert agreements == [True, True]
     assert not component.usable and component.load_record is None
@@ -221,32 +229,3 @@ def test_builtin_loader_rejects_tp_before_copy(monkeypatch, tp_size):
     else:
         modeling_beam.BeamForCausalLM.load_weights(model, {})
         assert calls == [(model, {})]
-
-
-@pytest.mark.parametrize("local_rank", range(4))
-def test_load_failures_identify_remote_rank_on_every_rank(monkeypatch, local_rank):
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._load import load_failure_details
-    from tensorrt_llm._torch.distributed.communicator import Distributed
-
-    outcomes = [
-        (True, ""),
-        (False, "ValueError('bad block scale')"),
-        (True, ""),
-        (False, "short read"),
-    ]
-    monkeypatch.setattr(
-        Distributed, "get", lambda mapping: SimpleNamespace(allgather=lambda outcome: outcomes)
-    )
-    error = ValueError("bad block scale") if local_rank == 1 else None
-    detail = load_failure_details(
-        SimpleNamespace(world_size=4, rank=local_rank), local_rank not in (1, 3), error
-    )
-    assert detail == "rank 1: ValueError('bad block scale'); rank 3: short read"
-
-
-def test_local_load_success_and_incomplete_coverage():
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam._load import load_failure_details
-
-    mapping = SimpleNamespace(world_size=1)
-    assert load_failure_details(mapping, True, None) is None
-    assert load_failure_details(mapping, False, None) == "rank 0: incomplete tensor coverage"

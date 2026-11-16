@@ -15,6 +15,9 @@ from tensorrt_llm._torch._experimental.modeling_v2.models.beam import routing
 from tensorrt_llm._torch.models.modeling_auto import AutoModelForCausalLM
 from tensorrt_llm.quantization.mode import QuantAlgo
 
+__extra_import_path__ = ["."]
+from _routing_support import route as _route  # noqa: E402
+
 pytestmark = pytest.mark.cpu_only
 _TARGET = "tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4"
 
@@ -130,7 +133,7 @@ def test_rejected_hardware_or_shape_does_not_import_target(monkeypatch, bad_shap
     if bad_shape:
         config.pretrained_config.num_hidden_layers = 6
     with pytest.raises(_router_index.NoTarget):
-        routing.route(
+        _route(
             config.pretrained_config,
             config.mapping,
             (10, 3) if bad_shape else (9, 0),
@@ -160,7 +163,7 @@ def test_supported_cache_and_dflash_routes_remain_available(monkeypatch, spec, c
         prefill_cuda_graph_backend="disabled",
     )
     assert (
-        routing.route(config.pretrained_config, config.mapping, (10, 3), spec, cache, llm_args=args)
+        _route(config.pretrained_config, config.mapping, (10, 3), spec, cache, llm_args=args)
         is target
     )
     reads.assert_called_once_with(config.pretrained_config, spec)
@@ -192,7 +195,7 @@ def test_execution_mode_refused_before_checkpoint_access(monkeypatch, field, val
     args = NS(cuda_graph_config=None, disable_overlap_scheduler=True, max_num_tokens=None)
     setattr(args, field, value)
     with pytest.raises(_router_index.NoTarget, match=message):
-        routing.route(config.pretrained_config, config.mapping, (10, 3), spec, None, llm_args=args)
+        _route(config.pretrained_config, config.mapping, (10, 3), spec, None, llm_args=args)
     reads.assert_not_called()
 
 
@@ -219,15 +222,11 @@ def test_paged_context_page_size_admission(monkeypatch, page_size, chunked, reus
         with pytest.raises(
             _router_index.NoTarget, match="kv_cache_config.tokens_per_block must be 32"
         ):
-            routing.route(
-                config.pretrained_config, config.mapping, (10, 3), spec, None, llm_args=args
-            )
+            _route(config.pretrained_config, config.mapping, (10, 3), spec, None, llm_args=args)
         reads.assert_not_called()
     else:
         assert (
-            routing.route(
-                config.pretrained_config, config.mapping, (10, 3), spec, None, llm_args=args
-            )
+            _route(config.pretrained_config, config.mapping, (10, 3), spec, None, llm_args=args)
             is target
         )
         reads.assert_called_once()
@@ -251,9 +250,7 @@ def test_loader_admission_precedes_checkpoint_access(monkeypatch):
         with pytest.raises(
             _router_index.NoTarget, match="checkpoint_loader=BeamNvfp4CheckpointLoader"
         ):
-            routing.route(
-                config.pretrained_config, config.mapping, (10, 3), None, None, llm_args=args
-            )
+            _route(config.pretrained_config, config.mapping, (10, 3), None, None, llm_args=args)
     reads.assert_not_called()
     for loader, checkpoint_format in [
         (None, "beam_nvfp4"),
@@ -261,9 +258,7 @@ def test_loader_admission_precedes_checkpoint_access(monkeypatch):
     ]:
         args.checkpoint_loader, args.checkpoint_format = loader, checkpoint_format
         assert (
-            routing.route(
-                config.pretrained_config, config.mapping, (10, 3), None, None, llm_args=args
-            )
+            _route(config.pretrained_config, config.mapping, (10, 3), None, None, llm_args=args)
             is target
         )
     assert reads.call_count == 2

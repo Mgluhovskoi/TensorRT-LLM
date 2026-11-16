@@ -20,11 +20,11 @@ import pytest
 import torch
 
 from tensorrt_llm._torch._experimental.modeling_v2._router_index import MODELING_V2_VALIDATE_ENV
-from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (  # noqa: E501
-    component as nvfp4,
+from tensorrt_llm._torch._experimental.modeling_v2.models.beam._tp4 import (  # noqa: E501
+    component_bf16 as bf16,
 )
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (  # noqa: E501
-    component_bf16 as bf16,
+    component as nvfp4,
 )
 
 pytestmark = pytest.mark.cpu_only
@@ -67,12 +67,10 @@ def _component(diagnostics: bool, agreements: list) -> SimpleNamespace:
 
 @pytest.mark.parametrize("cls", [BF16_CLS, NVFP4_CLS], ids=["bf16", "nvfp4"])
 @pytest.mark.parametrize("diagnostics", [False, True], ids=["off", "on"])
-@pytest.mark.parametrize("captured", [False, True], ids=["no-capture", "capture"])
 def test_moe_router_agreement_runs_only_in_diagnostic_mode(
     monkeypatch: pytest.MonkeyPatch,
     cls: type[bf16.BeamCheckpointLayoutBf16Sm103Tp4],
     diagnostics: bool,
-    captured: bool,
 ) -> None:
     agreements = []
     component = _component(diagnostics, agreements)
@@ -84,25 +82,19 @@ def test_moe_router_agreement_runs_only_in_diagnostic_mode(
         provider: Callable[[int, torch.Tensor], torch.Tensor],
     ) -> torch.Tensor:
         if cls is BF16_CLS:
-            provider(0, h[:1])  # one expert call, so a capture has rows to record
+            provider(0, h[:1])
         return torch.ones_like(h)
 
-    monkeypatch.setattr(bf16.dispatch_combine, "beam_dispatch_combine", dispatch)
+    monkeypatch.setattr(bf16.dispatch_combine, "dispatch_and_combine", dispatch)
     monkeypatch.setattr(bf16, "cublas_mm", lambda a, b: a.float() @ b.float())
     monkeypatch.setattr(bf16, "swiglu_fp32", lambda g, u: {"silu": g, "product": g, "act": g})
-    monkeypatch.setattr(bf16, "_rec", lambda capture, items: None)
-    monkeypatch.setattr(nvfp4, "_rec", lambda capture, items: None)
-    monkeypatch.setattr(nvfp4, "_moe_capture", lambda *args: {})
-    capture = {} if captured else None
     h = torch.zeros(T, HIDDEN, dtype=torch.bfloat16)
 
-    out = cls.moe(component, LAYER, h, capture)
+    out = cls.moe(component, LAYER, h)
 
     assert torch.equal(out, torch.ones_like(h))
-    # The router input, ids and weights are agreed on in diagnostic mode only, capture or not.
+    # The router input, ids and weights are agreed on in diagnostic mode only.
     assert agreements == ([3] if diagnostics else [])
-    if captured:
-        assert ("moe.agreement_sha256" in capture) is diagnostics
 
 
 class _Gather:
@@ -225,7 +217,7 @@ def test_full_model_validates_once_and_marks_every_block_call_checked(
         schedule=SimpleNamespace(is_sliding=lambda layer: True, is_sparse=lambda layer: True),
         window=512,
         _check_usable=lambda layer=None: None,
-        _select_rows=lambda logit_rows, spans, num_contexts: [T - 1],
+        _select_rows=lambda logit_rows, spans: [T - 1],
         embed=lambda ids: torch.zeros(T, HIDDEN),
         final_norm=lambda x: x,
         head=lambda x: x,
@@ -238,12 +230,7 @@ def test_full_model_validates_once_and_marks_every_block_call_checked(
         return input_ids, position_ids, [(0, T)]
 
     def block(
-        layer: int,
-        x: torch.Tensor,
-        positions: torch.Tensor,
-        md: object,
-        capture: dict | None,
-        **kwargs: object,
+        layer: int, x: torch.Tensor, positions: torch.Tensor, md: object, **kwargs: object
     ) -> torch.Tensor:
         blocks.append((layer, kwargs.get("call_checked")))
         return x

@@ -242,6 +242,7 @@ class PeerRegistrar:
                         f"layer group {self_lg_idx} pool view {self_pi} covers transport layers "
                         f"{self_ids}, its peer view {peer_key} covers {peer_ids}"
                     )
+
     def validate_draft_layers_compatible(self, peer_ri: RankInfo) -> None:
         """Raise ValueError when the peers' shared draft KV layouts disagree.
 

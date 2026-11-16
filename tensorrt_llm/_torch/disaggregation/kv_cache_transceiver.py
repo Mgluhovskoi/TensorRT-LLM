@@ -3,7 +3,8 @@
 
 from abc import ABC, abstractmethod
 from os import getenv
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional
+from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple,
+                    Optional)
 
 if TYPE_CHECKING:
     import torch

@@ -563,25 +563,27 @@ def dflash_block_kv_lookahead(spec_config) -> int:
 
 
 def check_draft_pool_reserve(spec_config, block_width: int, draft_kv_cache_manager) -> None:
-    """Raise unless ``draft_kv_cache_manager`` reserves the drafter's block at full acceptance.
+    """Require room for accepted proposals, the bonus token and the next draft block.
 
-    The manager's per-step reserve ``_kv_reserve_draft_tokens`` (positions past a request's
-    history, its extra KV tokens and the pending token) must hold ``max_draft_len`` accepted
-    proposals plus the ``block_width``-row noise block, less the extra KV tokens it already
-    keeps (``dflash_block_kv_lookahead``).
+    V2 exposes total capacity headroom over history; V1 exposes only the draft-token
+    reserve, in addition to its extra KV tokens and pending token. Check the matching
+    quantity so V2's separate block allocation is not mistaken for an undersized pool.
     """
     from .utils import get_num_extra_kv_tokens
 
-    extra = get_num_extra_kv_tokens(spec_config)
-    needed = spec_config.max_draft_len + int(block_width) - extra
-    reserve = getattr(draft_kv_cache_manager, "_kv_reserve_draft_tokens", None)
-    if reserve is None or int(reserve) < needed:
+    headroom = getattr(draft_kv_cache_manager, "_generation_kv_capacity_headroom", None)
+    if headroom is not None:
+        needed = spec_config.max_draft_len + 1 + int(block_width)
+        available = int(headroom)
+    else:
+        needed = spec_config.max_draft_len + int(block_width) - get_num_extra_kv_tokens(spec_config)
+        available = getattr(draft_kv_cache_manager, "_kv_reserve_draft_tokens", None)
+    if available is None or int(available) < needed:
         raise RuntimeError(
             f"DFlash: the draft KV cache manager {type(draft_kv_cache_manager).__name__} "
-            f"reserves {reserve} positions per generation step past a request's history; the "
-            f"drafter's noise block needs {needed} ({spec_config.max_draft_len} accepted "
-            f"proposals and a {block_width}-row block, less {extra} extra KV tokens). A shorter "
-            "reserve writes the block through block-table entries the manager never allocated."
+            f"provides {available} positions of {'capacity headroom' if headroom is not None else 'draft reserve'}; "
+            f"the drafter's noise block needs {needed}. A shorter allocation writes the "
+            "block through block-table entries the manager never allocated."
         )
 
 

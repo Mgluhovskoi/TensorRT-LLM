@@ -535,6 +535,9 @@ def _bare_dflash_worker(num_slots):
     worker._ctx_buf_inited = True
     worker._ctx_len = torch.zeros(num_slots + 1, dtype=torch.long, device="cuda")
     worker._ctx_len_host = [0] * (num_slots + 1)
+    worker._ctx_base_pages = torch.zeros_like(worker._ctx_len)
+    worker._ctx_base_host = [0] * (num_slots + 1)
+    worker._ctx_block_tables = torch.zeros((num_slots + 1, 1), dtype=torch.int32, device="cuda")
     worker._free_slots = deque(range(num_slots))
     worker._req_to_slot = {}
     worker._req_ctx_pos = {}
@@ -555,6 +558,7 @@ def test_an_imported_cursor_is_bound_at_the_first_generation_step():
     from tensorrt_llm._torch.speculative.interface import SpeculativeDecodingMode
 
     worker = _bare_dflash_worker(4)
+    worker._ctx_unified_cache = True
     # A slot left over from another request must not leak its length into the import.
     worker._write_ctx_len({0: 123})
     metadata = DFlashSpecMetadata(
@@ -569,6 +573,10 @@ def test_an_imported_cursor_is_bound_at_the_first_generation_step():
     worker.release_request_state(99)  # released before its first step
     metadata.request_ids = [21, 22]
     metadata.num_generations = 2
+    metadata.seq_lens = [8, 8]
+    metadata.host_position_ids = torch.tensor(
+        list(range(PROMPT, PROMPT + 8)) + list(range(8)), dtype=torch.int32
+    )
     metadata.prepare()
     torch.cuda.synchronize()
     imported, plain = worker._req_to_slot[21], worker._req_to_slot[22]
