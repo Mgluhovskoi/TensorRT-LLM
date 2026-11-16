@@ -1,7 +1,10 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Beam with ModelingV2
 
 This experimental target runs the complete 52-layer Beam model through TRT-LLM's
-native PyTorch executor using the StairCase/ModelingV2 approach. It includes dense
+native PyTorch executor using ModelingV2. It includes dense
 and MoE decoder blocks, checkpoint loading, cached generation, shared-prefix KV
 reuse, optional DFlash2 speculative decoding and an optional FP8 KV cache. It is
 served by the standard `trtllm-serve` command or the Python `LLM` API with
@@ -57,6 +60,12 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   -d '{"model":"beam-nvfp4","messages":[{"role":"user","content":"What is 12 plus 7?"}],"temperature":0,"max_tokens":4096,"stream":false,"chat_template_kwargs":{"reasoning_effort":128}}'
 ```
 
+The curated recipes specify an explicit `kv_cache_config.max_tokens` budget.
+Their deployment procedure uses `TRTLLM_SKIP_KV_CACHE_ESTIMATION=1` with that budget;
+this is a recipe-specific execution setting, not a requirement of all Beam serving.
+Follow the guide's environment settings when reproducing those recipes. Baseline
+BF16 KV startup and DFlash2/FP8 KV startup are distinct qualification cases.
+
 Set `stream` to `true` for streaming. Analysis-channel text is returned as
 `reasoning_content`; final-channel text is returned as `content`. `max_tokens`
 includes reasoning tokens, so a short budget can terminate before final-channel
@@ -108,8 +117,8 @@ retains TRTLLM attention. Accepted proposals must match the target's greedy choi
 on the verification logits; independent ordinary and speculative runs can still
 diverge at near ties when GEMM/collective shapes change.
 
-CUDA graphs and overlap scheduling remain future work. The bounded eager timing
-measurements are not a production throughput claim.
+CUDA graphs and overlap scheduling are disabled by this target. The bounded eager
+timing measurements are not a production throughput claim.
 
 ## Optional FP8 KV cache
 
@@ -199,18 +208,28 @@ python -m pytest \
 ```
 
 The second command requires a compatible CUDA environment but no checkpoint.
-These unit tests do not reproduce the full 52-layer accuracy evaluation. A
-checkpoint-backed end-to-end regression and its CI model staging remain separate
-integration work; generated tests must not be presented as that coverage.
+These unit tests do not reproduce the full 52-layer accuracy evaluation.
+The first-100 integration test is
+`tests/integration/defs/accuracy/test_nvfp4_serving_gsm8k.py`, listed with a
+45-minute timeout in `tests/integration/test_lists/qa/llm_function_core.txt`.
+It requires separately staged checkpoints, scales, dataset and criterion files;
+see the [evaluator README](../../../../../../examples/llm-api/gsm8k_eval/README.md).
+A test-list entry does not establish that a CI run selected or passed the test.
 
-L0 includes the CPU parser/routing and attention-selection checks, plus the
-single-GPU generated-input operator, block, six-layer and metadata regressions.
-The GPU tests are selected by the ModelingV2 directory entry in `l0_b300.yml`;
-the six-layer suites need up to approximately 200 GiB of free device memory and
-release their cached models at module teardown. Real-checkpoint multi-GPU smoke
-coverage is outside L0 and may run manually or in a separately provisioned
-nightly/long-running job. Full Beam GSM8K evaluation is manual-only and must not
-be registered in L0, nightly or long-running CI.
+For a generated-data four-rank load-error and collective check, with four GPUs
+visible and working MPI peer communication:
+
+```bash
+env -u TLLM_DISABLE_MPI mpirun -n 4 python -m pytest -q \
+  tests/unittest/_torch/modeling_v2/models/beam/test_distributed_loading.py
+```
+
+This manual check needs no checkpoint. Its communication capture/replay case does
+not qualify whole-model CUDA graphs. Inspect the selected test names and results
+in `tests/integration/test_lists/test-db/l0_b300.yml` and the corresponding CI run;
+an umbrella directory entry alone does not guarantee GPU coverage. Large component
+and multi-GPU checks are not lightweight L0 smoke tests. Full GSM8K evaluation is
+manual-only and must not be registered in L0, nightly or long-running CI.
 
 ## File organization and limits
 
@@ -219,17 +238,15 @@ be registered in L0, nightly or long-running CI.
 - `tensorrt_llm/_torch/models/checkpoints/beam/` registers the `beam_nvfp4`
   checkpoint format and holds the checkpoint's tokenizer class;
   `tensorrt_llm/llmapi/reasoning_parser.py` holds the `beam_harmony_text` parser.
-- `checkpoint_layout_nvfp4__sm_103__tp4/` supplies packed weights and expert kernels;
-  it reuses BF16 layout/loading and block helpers from
-  `checkpoint_layout_bf16__sm_103__tp4/`.
-- Router, expert, dispatch/combine, dense/sparse block, and six-layer directories
-  retain component implementations and generated-input regression coverage. Some
-  are runtime dependencies of the full target, not disposable tier artifacts.
-- `tensorrt_llm/_torch/models/modeling_beam.py` supplies `BeamConfig` and the earlier
-  built-in component implementation. The result above belongs to the routed
-  ModelingV2 target, not to that built-in model path.
+- The full-model package also contains packed expert layout/provider code and the
+  shared BF16 helpers (`layout_bf16.py`, `loader_bf16.py`, `component_bf16.py`),
+  alongside `_attention.py` and `dispatch_combine.py`.
+- The TP1 router, expert, MoE, dense/sparse block and small-model packages contain
+  component implementations. Their generated-input tests live under
+  `tests/unittest/_torch/modeling_v2/models/beam/`.
+- `tensorrt_llm/_torch/models/modeling_beam.py` supplies `BeamConfig`. The recorded
+  accuracy result belongs to the routed ModelingV2 target.
 
 Other GPU architectures, parallel layouts, other speculative modes,
 CUDA graphs, overlap scheduling, chunked prefill and tool calling are not
-qualified by this implementation. Subsequent feature/performance
-work should preserve this functional and accuracy baseline in follow-up PRs.
+qualified by this implementation.
