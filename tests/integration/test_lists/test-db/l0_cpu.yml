@@ -73,6 +73,7 @@ l0_cpu:
   - unittest/_torch/modeling_v2/models/beam/test_routing.py
   - unittest/_torch/modeling_v2/models/beam/test_loading_contracts.py
   - unittest/_torch/modeling_v2/models/beam/test_diagnostic_mode.py
+  - unittest/_torch/modeling_v2/models/beam/test_component_support.py
   - unittest/_torch/modeling_v2/models/beam/checkpoint_layout_bf16__sm_103__tp4/test_checkpoint_layout.py
   - unittest/_torch/modeling_v2/models/beam/checkpoint_layout_nvfp4__sm_103__tp4/test_checkpoint_layout_nvfp4.py
   - unittest/_torch/modeling_v2/test_modeling_v2_deepseek_default_shards.py
