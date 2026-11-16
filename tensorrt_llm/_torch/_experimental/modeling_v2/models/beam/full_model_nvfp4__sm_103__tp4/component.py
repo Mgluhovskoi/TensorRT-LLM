@@ -46,8 +46,6 @@ from typing import Any, Mapping, Optional, Sequence
 import torch
 from torch import nn
 
-from tensorrt_llm._torch.distributed import AllReduce
-from tensorrt_llm.functional import AllReduceStrategy
 from tensorrt_llm.mapping import Mapping as ParallelMapping
 
 from .._constants import SM as _SM
@@ -181,7 +179,7 @@ class BeamCheckpointLayoutNvfp4Sm103Tp4(BeamCheckpointLayoutBf16Sm103Tp4):
             )
             self.register_parameter(_attr(spec.name), param)
             self.tensor_names.append(spec.name)
-        self._allreduce = AllReduce(mapping=mapping, strategy=AllReduceStrategy.NCCL)
+        self._init_collectives()
         self.usable = False
         self.load_record: Optional[dict] = None
         self._init_kv_cache_mode()
