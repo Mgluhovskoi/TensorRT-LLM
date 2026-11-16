@@ -1804,3 +1804,23 @@ def test_endpoint_client_imports_no_tensorrt_llm_torch_pytest_or_yaml(tmp_path):
         [sys.executable, str(probe)], capture_output=True, text=True, timeout=120, check=True
     )
     assert json.loads(result.stdout.strip().splitlines()[-1]) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        1,
+        "text",
+        {"choices": [None]},
+        {"choices": [{"message": []}]},
+        {"choices": [{"message": "text"}]},
+        {"choices": [{"message": None}]},
+    ],
+)
+def test_non_object_reply_is_recorded_as_error(payload):
+    status, error, fields = records.interpret_reply(200, json.dumps(payload))
+    assert status == records.ERROR
+    assert error.startswith("malformed reply:")
+    assert fields == {"http_status": 200}
