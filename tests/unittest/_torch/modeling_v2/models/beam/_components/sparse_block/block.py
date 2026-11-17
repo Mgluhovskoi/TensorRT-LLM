@@ -59,6 +59,9 @@ from tensorrt_llm._torch._experimental.modeling_v2.catalog.norm.flashinfer_rmsno
 )
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam import _attention
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam._constants import SM as _SM
+from tensorrt_llm._torch._experimental.modeling_v2.models.beam.ops.norm.beam_rmsnorm_fp32 import (
+    beam_rmsnorm_fp32,
+)
 from tensorrt_llm._torch._experimental.modeling_v2.models.beam.ops.residual.beam_depth_residual import (
     beam_depth_residual,
     depth_scales,
@@ -292,7 +295,7 @@ class BeamSparseBlockBf16Sm103Tp1(nn.Module):
         x = hidden_states.view(num_tokens, self.hidden_size)
         positions = position_ids.view(num_tokens)
 
-        h = flashinfer_rmsnorm(x, self.input_layernorm, self.eps)
+        h = beam_rmsnorm_fp32(x, self.input_layernorm, self.eps)
         h = self.attention(h, positions, step)
         h = flashinfer_rmsnorm(h, self.post_attention_layernorm, self.eps)
         x = beam_depth_residual(h, x, *self.attention_scales)
