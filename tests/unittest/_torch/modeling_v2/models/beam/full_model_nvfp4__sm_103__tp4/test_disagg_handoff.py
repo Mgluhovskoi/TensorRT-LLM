@@ -322,19 +322,21 @@ class _Manager:
 
 def _coordinator(target_event):
     published = []
+    deferred_counts = []
     transceiver = types.SimpleNamespace(
         kv_transfer_timeout_ms=None,
         request_and_receive_async=published.append,
+        set_gen_deferred_receives=deferred_counts.append,
+        deferred_counts=deferred_counts,
     )
     coordinator = DisaggTransferCoordinator(
         transceiver=transceiver,
         transfer_manager=None,
         kv_cache_manager=_Manager(target_event),
-        dist=None,
+        dist=types.SimpleNamespace(world_size=1),
         effects=None,
         registry=None,
         enable_attention_dp=False,
-        force_terminate_ctx_for_partial_reuse=False,
         draft_kv_cache_manager=None,
         is_kv_manager_v2=True,
         defer_unready_gen_receives=True,
@@ -356,6 +358,7 @@ def test_a_receive_waits_for_the_one_admission_event():
     target.done = True
     coordinator._publish_ready_gen_receives()
     assert published == [req]
+    assert coordinator._transceiver.deferred_counts == [1, 0]
 
 
 # ------------------------------------------------------------------------- CUDA: managers
@@ -683,6 +686,7 @@ def _executor(requests, transceiver, canceled=()):
     )
     executor = PyExecutor.__new__(PyExecutor)
     executor.kv_cache_transceiver = transceiver
+    executor.enable_attention_dp = False
     executor.active_requests = list(requests)
     executor.canceled_req_ids = list(canceled)
     executor.max_seq_len = 8192
@@ -698,7 +702,6 @@ def _executor(requests, transceiver, canceled=()):
         effects=effects,
         registry=None,
         enable_attention_dp=False,
-        force_terminate_ctx_for_partial_reuse=False,
     )
     return executor, failures
 

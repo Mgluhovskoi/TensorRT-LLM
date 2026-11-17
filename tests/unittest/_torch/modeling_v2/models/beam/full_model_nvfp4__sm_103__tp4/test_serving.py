@@ -225,7 +225,7 @@ def test_route_claims_only_the_supported_deployment():
         (_beam_config(), _mapping(), (10, 3), object(), None),
         (_beam_config(), _mapping(), (10, 3), None, QuantAlgo.NVFP4),
         (_beam_config(), _mapping(), (10, 3), None, "NVFP4"),
-        (_beam_config(), _mapping(), (10, 3), None, "fp8_ds_mla"),
+        (_beam_config(), _mapping(), (10, 3), None, "INT8"),
     ]
     for args in declined:
         with pytest.raises(NoTarget, match="KV cache|compute capability"):
@@ -249,12 +249,19 @@ def test_engine_resolver_honors_effective_kv_format(
     """The engine's complete routing call accepts BF16 and FP8 KV and refuses other formats."""
     monkeypatch.setattr(_router_index, "_device_compute_capability", lambda: (10, 3))
     config = SimpleNamespace(
+        mm_encoder_only=False,
+        moe_tactic=None,
+        modeling_v2_target=None,
         pretrained_config=_beam_config(),
         mapping=_mapping(),
         spec_config=None,
         quant_config=SimpleNamespace(kv_cache_quant_algo=checkpoint_kv),
     )
-    args = SimpleNamespace(modeling_v2=mode, kv_cache_config=SimpleNamespace(dtype=runtime_kv))
+    args = SimpleNamespace(
+        modeling_v2=mode,
+        checkpoint_format="beam_nvfp4",
+        kv_cache_config=SimpleNamespace(dtype=runtime_kv),
+    )
     if supported:
         target = _router_index.modeling_v2_resolve(config, args)
         assert target.__name__ == "ModelingV2BeamFullModelNvfp4Sm103Tp4"
@@ -283,6 +290,9 @@ def test_route_refuses_an_unsupported_token_budget_before_reading_the_checkpoint
         _route(_beam_config(), _mapping(), (10, 3), _dflash(), None, llm_args=args)
     monkeypatch.setattr(_router_index, "_device_compute_capability", lambda: (10, 3))
     config = SimpleNamespace(
+        mm_encoder_only=False,
+        moe_tactic=None,
+        modeling_v2_target=None,
         pretrained_config=_beam_config(),
         mapping=_mapping(),
         spec_config=None,
@@ -290,6 +300,7 @@ def test_route_refuses_an_unsupported_token_budget_before_reading_the_checkpoint
     )
     args = SimpleNamespace(
         modeling_v2="require",
+        checkpoint_format="beam_nvfp4",
         kv_cache_config=SimpleNamespace(dtype="fp8"),
         max_num_tokens=max_num_tokens,
     )
@@ -487,12 +498,19 @@ def test_resolver_falls_back_or_fails_with_the_checkpoint_reason(monkeypatch, tm
     monkeypatch.setattr(_router_index, "_device_compute_capability", lambda: (10, 3))
     directory = write_checkpoint(tmp_path / "ckpt", config={**checkpoint_config(), "head_dim": 64})
     config = SimpleNamespace(
+        mm_encoder_only=False,
+        moe_tactic=None,
+        modeling_v2_target=None,
         pretrained_config=_beam_config(name_or_path=directory),
         mapping=_mapping(),
         spec_config=None,
         quant_config=SimpleNamespace(kv_cache_quant_algo=None),
     )
-    args = SimpleNamespace(modeling_v2=mode, kv_cache_config=SimpleNamespace(dtype="auto"))
+    args = SimpleNamespace(
+        modeling_v2=mode,
+        checkpoint_format="beam_nvfp4",
+        kv_cache_config=SimpleNamespace(dtype="auto"),
+    )
     if mode == "auto":
         assert _router_index.modeling_v2_resolve(config, args) is None
     else:

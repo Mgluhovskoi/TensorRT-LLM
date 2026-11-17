@@ -104,7 +104,7 @@ from tensorrt_llm._torch.models.checkpoints.hf.config_loader import HfConfigLoad
 from tensorrt_llm._torch.models.checkpoints.hf.weight_loader import HfWeightLoader
 from tensorrt_llm._torch.models.modeling_utils import (
     CHECKPOINT_LOADER_FORMAT_DEFAULT_MAPPING, get_checkpoint_weight_loader, get_config_loader)
-from tensorrt_llm._torch.pyexecutor.model_loader import _construct_checkpoint_loader
+from tensorrt_llm._torch.pyexecutor.model_loader import construct_checkpoint_loader
 from tensorrt_llm.llmapi.reasoning_parser import ReasoningParserFactory
 
 target = "tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4"
@@ -116,7 +116,7 @@ record = {
     "cli_imported": "tensorrt_llm.commands.serve" in sys.modules,
     "weights_before": target + ".weights" in sys.modules,
 }
-loader = _construct_checkpoint_loader(None, "beam_nvfp4")
+loader = construct_checkpoint_loader(None, "beam_nvfp4")
 record.update(
     loader=type(loader).__name__,
     format_on_instance=loader.checkpoint_format,
@@ -170,14 +170,17 @@ print(json.dumps({{
     "tokenizer": type(tokenizer).__name__,
     "ids": tokenizer.encode("What is 12 plus 7 ?"),
     "model_loader_imported": "tensorrt_llm._torch.pyexecutor.model_loader" in sys.modules,
-    "modeling_v2_imported": "tensorrt_llm._torch._experimental.modeling_v2" in sys.modules,
+    "beam_modeling_imported": (
+        "tensorrt_llm._torch._experimental.modeling_v2.models.beam."
+        "full_model_nvfp4__sm_103__tp4.modeling"
+    ) in sys.modules,
 }}))
 """
 
 
 def test_fresh_server_resolves_the_parser_and_tokenizer_from_shared_registries(tmp_path):
     """The server process has the parser as soon as it imports the parser registry, and loads
-    the tokenizer from its ``custom_tokenizer`` path, without the model loader or ModelingV2."""
+    the tokenizer from its ``custom_tokenizer`` path, without the model loader or Beam modeling."""
     source = _SERVER_PATH.format(tokenizer=_TOKENIZER, directory=_tokenizer_dir(tmp_path / "ckpt"))
     record = _run_fresh(tmp_path, source, dict(os.environ))
     assert record == {
@@ -186,7 +189,7 @@ def test_fresh_server_resolves_the_parser_and_tokenizer_from_shared_registries(t
         "tokenizer": "BeamFastTokenizer",
         "ids": [1, 2, 3, 4, 5, 6],
         "model_loader_imported": False,
-        "modeling_v2_imported": False,
+        "beam_modeling_imported": False,
     }
 
 
@@ -229,12 +232,12 @@ def _counting_reader(monkeypatch):
 
 
 def test_environment_table_is_read_once_per_loader_and_travels_resolved(tmp_path, monkeypatch):
-    from tensorrt_llm._torch.pyexecutor.model_loader import _construct_checkpoint_loader
+    from tensorrt_llm._torch.pyexecutor.model_loader import construct_checkpoint_loader
 
     calls = _counting_reader(monkeypatch)
     scales = _scale_file(tmp_path / "scales.json")
     monkeypatch.setenv(_ENV, scales)
-    loader = _construct_checkpoint_loader(None, BEAM_NVFP4_CHECKPOINT_FORMAT)
+    loader = construct_checkpoint_loader(None, BEAM_NVFP4_CHECKPOINT_FORMAT)
     assert isinstance(loader, weights.BeamNvfp4CheckpointLoader)
     assert calls == [scales]
     table = loader.kv_cache_scales
@@ -245,18 +248,18 @@ def test_environment_table_is_read_once_per_loader_and_travels_resolved(tmp_path
     assert copy.kv_cache_scales == table
     assert calls == [scales], "a worker's copy carries the resolved table"
     monkeypatch.delenv(_ENV)
-    assert _construct_checkpoint_loader(None, BEAM_NVFP4_CHECKPOINT_FORMAT).kv_cache_scales is None
+    assert construct_checkpoint_loader(None, BEAM_NVFP4_CHECKPOINT_FORMAT).kv_cache_scales is None
 
 
 def test_explicit_loader_instance_wins_over_the_environment(tmp_path, monkeypatch):
-    from tensorrt_llm._torch.pyexecutor.model_loader import _construct_checkpoint_loader
+    from tensorrt_llm._torch.pyexecutor.model_loader import construct_checkpoint_loader
     from tensorrt_llm.llmapi.llm_args import TorchLlmArgs
 
     explicit = weights.read_kv_cache_scales(_scale_file(tmp_path / "explicit.json", draft=None))
     calls = _counting_reader(monkeypatch)
     monkeypatch.setenv(_ENV, _scale_file(tmp_path / "environment.json"))
     instance = weights.BeamNvfp4CheckpointLoader(kv_cache_scales=explicit)
-    assert _construct_checkpoint_loader(instance, None) is instance
+    assert construct_checkpoint_loader(instance, None) is instance
     assert instance.kv_cache_scales is explicit and calls == []
     assert weights.BeamNvfp4CheckpointLoader().kv_cache_scales is None and calls == []
     # The native precedence is unchanged: a format name and an instance together drop the instance.
@@ -283,14 +286,14 @@ def test_explicit_loader_instance_wins_over_the_environment(tmp_path, monkeypatc
     ids=["missing", "malformed", "not-object", "no-target", "partial", "bad-draft", "negative"],
 )
 def test_unusable_environment_table_fails_the_loader_build(tmp_path, monkeypatch, contents, reason):
-    from tensorrt_llm._torch.pyexecutor.model_loader import _construct_checkpoint_loader
+    from tensorrt_llm._torch.pyexecutor.model_loader import construct_checkpoint_loader
 
     path = tmp_path / "scales.json"
     if contents is not None:
         path.write_text(contents)
     monkeypatch.setenv(_ENV, str(path))
     with pytest.raises(ValueError, match=reason) as raised:
-        _construct_checkpoint_loader(None, BEAM_NVFP4_CHECKPOINT_FORMAT)
+        construct_checkpoint_loader(None, BEAM_NVFP4_CHECKPOINT_FORMAT)
     assert str(raised.value).startswith(f"{_ENV}=")
 
 
@@ -437,9 +440,20 @@ def _serve_llm_kwargs(model: str, config: str, *extra: str) -> dict:
         mock.patch("tensorrt_llm.commands.serve.uvloop.run"),
     ):
         serve_main(
-            args=[model, "--config", config, "--port", "18999", *extra], standalone_mode=False
+            args=[
+                model,
+                "--config",
+                config,
+                "--port",
+                "18999",
+                "--num_serve_frontends",
+                "1",
+                *extra,
+            ],
+            standalone_mode=False,
         )
     llm.assert_called_once()
+    assert llm.call_args.kwargs["num_serve_frontends"] == 1
     return llm.call_args.kwargs
 
 

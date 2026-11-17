@@ -16,6 +16,8 @@ def route(pretrained_config, mapping, capability, spec, cache, *, llm_args=None)
     )
     if llm_args is None:
         llm_args = SimpleNamespace(checkpoint_format="beam_nvfp4", max_num_tokens=8192)
+    if not hasattr(llm_args, "checkpoint_format"):
+        llm_args.checkpoint_format = "beam_nvfp4"
     if not hasattr(llm_args, "kv_cache_config"):
         llm_args.kv_cache_config = SimpleNamespace(dtype="auto")
     elif not hasattr(llm_args.kv_cache_config, "dtype"):

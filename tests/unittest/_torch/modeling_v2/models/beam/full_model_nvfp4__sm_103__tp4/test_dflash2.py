@@ -175,7 +175,10 @@ def _selected_token(processor_layers: int, bonus: float, monkeypatch) -> int:
             torch.tensor([ANCHOR], device="cuda"),
         )
         draft_spec = types.SimpleNamespace(
-            wants_advanced_draft_sampling=False, draft_vocab_size=VOCAB, vocab_size=VOCAB
+            wants_advanced_draft_sampling=False,
+            draft_vocab_size=VOCAB,
+            vocab_size=VOCAB,
+            is_cuda_graph=False,
         )
         picks.add(int(worker.sample_draft_tokens(block_logits, draft_spec, 1).view(-1)[0]))
     assert len(picks) == 1, "the TP ranks disagree on the draft token"

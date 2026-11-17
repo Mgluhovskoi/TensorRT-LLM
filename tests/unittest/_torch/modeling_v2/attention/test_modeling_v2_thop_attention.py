@@ -8050,9 +8050,7 @@ BEAM_HQ, BEAM_HKV, BEAM_D, BEAM_WINDOW, BEAM_P = 12, 2, 128, 512, 8
 
 
 def _beam_attention_module():
-    from tensorrt_llm._torch._experimental.modeling_v2.models.beam.full_model_nvfp4__sm_103__tp4 import (
-        _attention,
-    )
+    from tensorrt_llm._torch._experimental.modeling_v2.models.beam import _attention
 
     return _attention
 
